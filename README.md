@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/bda491a0-a51b-4aaf-9ec8-3b3e7948d5ce
 - **Modular Architecture**: Extend the server with custom application logic via an external modulator
 - **Secure by Default**: TLS/SSL support with automatic certificate generation for development
 - **Channel Management**: Fine-grained access control and configuration per channel
-- **High Performance**: Asynchronous Rust implementation with efficient message routing ([see benchmark results](docs/BENCHMARK.md))
+- **High Performance**: Asynchronous Rust implementation leveraging `io-uring` for high-throughput ([see benchmark results](docs/BENCHMARK.md))
 
 ## 🚀 Quick Start
 
