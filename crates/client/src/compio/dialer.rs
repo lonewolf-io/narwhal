@@ -105,6 +105,9 @@ impl Dialer for TcpDialer {
     let tcp = ::compio::net::TcpStream::connect(&self.address)
       .await
       .map_err(|e| anyhow!("failed to connect to {}: {}", self.address, e))?;
+
+    tcp.set_nodelay(true)?;
+
     Ok(Stream::Tcp(tcp))
   }
 }
@@ -194,6 +197,8 @@ impl Dialer for TlsDialer {
     let tcp_stream = ::compio::net::TcpStream::connect(&self.address)
       .await
       .map_err(|e| anyhow!("failed to connect to {}: {}", self.address, e))?;
+
+    tcp_stream.set_nodelay(true)?;
 
     let tls_stream = self
       .tls_connector

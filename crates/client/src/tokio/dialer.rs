@@ -130,6 +130,8 @@ impl Dialer for TcpDialer {
     let tcp_stream =
       TcpStream::connect(&self.address).await.map_err(|e| anyhow!("failed to connect to {}: {}", self.address, e))?;
 
+    tcp_stream.set_nodelay(true)?;
+
     Ok(Stream::Tcp(tcp_stream.compat()))
   }
 }
