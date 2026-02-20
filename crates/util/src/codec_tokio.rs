@@ -197,7 +197,7 @@ impl<R: AsyncRead + Unpin> StreamReader<R> {
     if let Some(pos) = self.line_pos.take() {
       if pos < self.current_pos {
         let remaining_len = self.current_pos - (pos + 1);
-        self.pool_buffer.as_mut_slice().copy_within(pos + 1.., 0);
+        self.pool_buffer.as_mut_slice().copy_within(pos + 1..self.current_pos, 0);
         self.current_pos = remaining_len;
       } else {
         self.current_pos = 0;
