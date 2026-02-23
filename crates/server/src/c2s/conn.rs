@@ -777,25 +777,6 @@ impl C2sDispatcherInner {
     Ok(())
   }
 
-  /// Handles channel leave requests.
-  ///
-  /// Supports leaving a channel directly or on behalf of another user if authorized.
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The leave message containing channel ID and correlation ID
-  ///
-  /// # Returns
-  ///
-  /// Returns `Ok(())` if the leave operation succeeds.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if:
-  /// * The channel ID is invalid
-  /// * The user is not in the channel
-  /// * The user lacks permission to remove others
-
   /// Handles channel deletion requests.
   ///
   /// Only the channel owner is allowed to delete the channel. All members are
@@ -837,6 +818,24 @@ impl C2sDispatcherInner {
     Ok(())
   }
 
+  /// Handles channel leave requests.
+  ///
+  /// Supports leaving a channel directly or on behalf of another user if authorized.
+  ///
+  /// # Arguments
+  ///
+  /// * `msg` - The leave message containing channel ID and correlation ID
+  ///
+  /// # Returns
+  ///
+  /// Returns `Ok(())` if the leave operation succeeds.
+  ///
+  /// # Errors
+  ///
+  /// Returns an error if:
+  /// * The channel ID is invalid
+  /// * The user is not in the channel
+  /// * The user lacks permission to remove others
   async fn dispatch_leave_message(&mut self, msg: Message) -> anyhow::Result<()> {
     assert!(matches!(msg, Message::LeaveChannel { .. }));
 
