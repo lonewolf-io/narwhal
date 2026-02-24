@@ -349,7 +349,7 @@ async fn broadcast_messages(
   let mut broadcast_tasks = Vec::new();
 
   // Create a histogram for tracking latencies (max 60s, 3 significant digits)
-  let arc_histogram = Arc::new(Mutex::new(hdrhistogram::Histogram::<u64>::new_with_bounds(1, 60_000, 3).unwrap()));
+  let arc_histogram = Arc::new(Mutex::new(hdrhistogram::Histogram::<u64>::new_with_bounds(1, 60_000_000, 3).unwrap()));
 
   for (client_idx, client) in clients.iter().enumerate() {
     let client = client.clone();
@@ -438,9 +438,9 @@ async fn broadcast_message(
   let start = Instant::now();
 
   client.broadcast(channel, Some(QoS::AckOnReceived), payload).await?;
-  let elapsed_ms = start.elapsed().as_millis() as u64;
+  let elapsed_us = start.elapsed().as_micros() as u64;
 
-  Ok(elapsed_ms)
+  Ok(elapsed_us)
 }
 
 /// Run the benchmark with the given configuration
@@ -614,12 +614,12 @@ fn print_results(metrics: &BenchmarkMetrics) {
     && !hist.is_empty()
   {
     println!("Message Latency:");
-    println!("  Min:         {}ms", hist.min());
-    println!("  Max:         {}ms", hist.max());
-    println!("  Mean:        {:.2}ms", hist.mean());
-    println!("  P50:         {}ms", hist.value_at_quantile(0.50));
-    println!("  P95:         {}ms", hist.value_at_quantile(0.95));
-    println!("  P99:         {}ms", hist.value_at_quantile(0.99));
+    println!("  Min:         {:.2}ms", hist.min() as f64 / 1000.0);
+    println!("  Max:         {:.2}ms", hist.max() as f64 / 1000.0);
+    println!("  Mean:        {:.2}ms", hist.mean() / 1000.0);
+    println!("  P50:         {:.2}ms", hist.value_at_quantile(0.50) as f64 / 1000.0);
+    println!("  P95:         {:.2}ms", hist.value_at_quantile(0.95) as f64 / 1000.0);
+    println!("  P99:         {:.2}ms", hist.value_at_quantile(0.99) as f64 / 1000.0);
     println!();
   }
 
