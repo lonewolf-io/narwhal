@@ -26,8 +26,8 @@
   - [JOIN_ACK](#join_ack)
   - [LEAVE](#leave)
   - [LEAVE_ACK](#leave_ack)
-  - [DELETE_CHAN](#delete_chan)
-  - [DELETE_CHAN_ACK](#delete_chan_ack)
+  - [DELETE](#delete)
+  - [DELETE_ACK](#delete_ack)
   - [BROADCAST](#broadcast)
   - [BROADCAST_ACK](#broadcast_ack)
   - [MESSAGE](#message)
@@ -518,7 +518,7 @@ LEAVE_ACK id=2
 
 ---
 
-### DELETE_CHAN
+### DELETE
 
 Requests deletion of a channel. Only the channel owner is allowed to delete the channel. All members are removed, the channel is destroyed, and a `CHANNEL_DELETED` event is sent to every other member.
 
@@ -530,23 +530,23 @@ Requests deletion of a channel. Only the channel owner is allowed to delete the 
 
 **Example**:
 ```
-DELETE_CHAN id=3 channel=!42@example.com
+DELETE id=3 channel=!42@example.com
 ```
 
 ---
 
-### DELETE_CHAN_ACK
+### DELETE_ACK
 
 Acknowledges a channel deletion request.
 
 **Direction**: Server → Client
 
 **Parameters**:
-- `id` (u32, required): Request identifier matching the DELETE_CHAN message (must be non-zero)
+- `id` (u32, required): Request identifier matching the DELETE message (must be non-zero)
 
 **Example**:
 ```
-DELETE_CHAN_ACK id=3
+DELETE_ACK id=3
 ```
 
 ---
