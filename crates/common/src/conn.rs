@@ -94,7 +94,6 @@ const READ_CHANNEL_CAPACITY: usize = 1024;
 
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 const SHUTDOWN_DRAIN_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const FLUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 /// Result type sent from the read loop to the main connection loop.
 enum ReadResult {
@@ -1143,8 +1142,6 @@ impl<D: Dispatcher> Conn<D> {
 
     let mut cancelled = std::pin::pin!(shutdown_token.cancelled().fuse());
 
-    let mut needs_flush = false;
-
     'connection_loop: loop {
       futures::select! {
         // Receive parsed messages from the read loop.
@@ -1206,15 +1203,6 @@ impl<D: Dispatcher> Conn<D> {
           }
 
           pool_buffer_batch = Self::write_batch(pool_buffer_batch, writer).await?;
-          needs_flush = true;
-        },
-
-        // Periodically flush the writer.
-        _ = compio::time::sleep(FLUSH_INTERVAL).fuse() => {
-          if needs_flush {
-            writer.flush().await?;
-            needs_flush = false;
-          }
         },
 
         // Close the connection.
@@ -1273,6 +1261,8 @@ impl<D: Dispatcher> Conn<D> {
 
     let mut batch = buf_result.1;
     batch.clear();
+
+    writer.flush().await?;
 
     Ok(batch)
   }
