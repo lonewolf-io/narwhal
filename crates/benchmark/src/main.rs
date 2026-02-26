@@ -413,7 +413,7 @@ async fn broadcast_messages(
 
   // Wait for all broadcast tasks to complete
   let results = join_all(broadcast_tasks).await;
-  let total_sent: u64 = results.into_iter().into_iter().sum();
+  let total_sent: u64 = results.into_iter().sum();
 
   info!("total messages sent: {}", total_sent);
 
