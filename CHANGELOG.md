@@ -4,6 +4,7 @@ All notable changes to Narwhal will be documented in this file.
 
 ## main / unreleased
 
+* [CHANGE]: Add `seq` and `timestamp` fields to `MESSAGE` and `BROADCAST_ACK`. Each delivered message now carries a per-channel monotonic sequence number and a server-assigned UTC millisecond timestamp; both are echoed in `BROADCAST_ACK` so the sender knows the log position of its message. [#166](https://github.com/narwhal-io/narwhal/pull/166)
 * [CHANGE]: Migrate primary async runtime from tokio to monoio. [#150](https://github.com/narwhal-io/narwhal/pull/150), [#165](https://github.com/narwhal-io/narwhal/pull/165)
 * [ENHANCEMENT]: Add `DELETE` command for channel deletion. [#160](https://github.com/narwhal-io/narwhal/pull/160),[#161](https://github.com/narwhal-io/narwhal/pull/161)
 
