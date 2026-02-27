@@ -2,6 +2,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_lock::RwLock;
 use dashmap::DashMap;
@@ -316,6 +318,7 @@ impl ChannelManager {
         members: HashSet::new(),
         allowed_targets: Arc::default(),
         notifier,
+        seq: AtomicU64::new(1),
       };
 
       as_owner = true;
@@ -979,9 +982,12 @@ impl ChannelManager {
       return Err(narwhal_protocol::Error::new(NotAllowed).with_id(correlation_id).into());
     }
     let max_payload_size = channel_inner.config.max_payload_size;
-
     let allowed_targets = channel_inner.allowed_targets.clone();
+    let seq = channel_inner.seq.fetch_add(1, Ordering::Relaxed);
     drop(channel_inner);
+
+    // Capture the wall-clock timestamp once so all recipients see the same value.
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
 
     // Validate channel established payload size limit.
     let payload_length = payload.as_slice().len() as u32;
@@ -997,7 +1003,7 @@ impl ChannelManager {
     let qos = qos.map(QoS::try_from).transpose()?.unwrap_or(QoS::default());
 
     if qos == QoS::AckOnReceived {
-      transmitter.send_message(Message::BroadcastAck(BroadcastAckParameters { id: correlation_id }));
+      transmitter.send_message(Message::BroadcastAck(BroadcastAckParameters { id: correlation_id, seq }));
     }
 
     // Broadcast the payload to all members of the channel, except the sender.
@@ -1005,12 +1011,14 @@ impl ChannelManager {
       from: (&nid).into(),
       channel: (&channel_id).into(),
       length: payload_length,
+      seq,
+      timestamp,
     });
 
     router.route_to_many(msg, Some(payload), allowed_targets.iter(), Some(transmitter.resource())).await?;
 
     if qos == QoS::AckOnDelivered {
-      transmitter.send_message(Message::BroadcastAck(BroadcastAckParameters { id: correlation_id }));
+      transmitter.send_message(Message::BroadcastAck(BroadcastAckParameters { id: correlation_id, seq }));
     }
 
     Ok(())
@@ -1044,6 +1052,10 @@ pub struct ChannelInner {
 
   /// The notifier for sending events to channel members.
   notifier: Notifier,
+
+  /// Monotonically increasing sequence counter for messages published to this channel.
+  /// Starts at 1; each broadcast atomically claims the next value.
+  seq: AtomicU64,
 }
 
 // ===== impl ChannelInner =====

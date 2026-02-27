@@ -104,6 +104,12 @@ impl<'a> ParameterValueDisplay<'a> for u32 {
   }
 }
 
+impl<'a> ParameterValueDisplay<'a> for u64 {
+  fn fmt_param(&self, c: &mut Cursor<&'a mut [u8]>) -> Result<(), SerializeError> {
+    write_fmt_to_cursor(c, format_args!("{}", self))
+  }
+}
+
 impl<'a> ParameterValueDisplay<'a> for bool {
   fn fmt_param(&self, c: &mut Cursor<&'a mut [u8]>) -> Result<(), SerializeError> {
     write_fmt_to_cursor(c, format_args!("{}", self))
@@ -220,8 +226,8 @@ mod tests {
             },
             TestCase {
                 name: "BROADCAST_ACK",
-                msg: Message::BroadcastAck(BroadcastAckParameters { id: 1 }),
-                expected_out: Some("BROADCAST_ACK id=1\n".to_string()),
+                msg: Message::BroadcastAck(BroadcastAckParameters { id: 1, seq: 1 }),
+                expected_out: Some("BROADCAST_ACK id=1 seq=1\n".to_string()),
             },
             TestCase {
                 name: "CHAN_ACL",
@@ -344,8 +350,8 @@ mod tests {
             },
             TestCase {
                 name: "MESSAGE",
-                msg: Message::Message(MessageParameters { from: "test_user@localhost".into(), channel: "!1@localhost".into(), length: 10 }),
-                expected_out: Some("MESSAGE channel=!1@localhost from=test_user@localhost length=10\n".to_string()),
+                msg: Message::Message(MessageParameters { from: "test_user@localhost".into(), channel: "!1@localhost".into(), length: 10, seq: 1, timestamp: 1 }),
+                expected_out: Some("MESSAGE channel=!1@localhost from=test_user@localhost length=10 seq=1 timestamp=1\n".to_string()),
             },
             TestCase {
                 name: "MOD_DIRECT",

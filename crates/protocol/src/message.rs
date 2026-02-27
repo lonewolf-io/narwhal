@@ -116,6 +116,9 @@ pub struct BroadcastParameters {
 pub struct BroadcastAckParameters {
   #[param(validate = "non_zero")]
   pub id: u32,
+
+  #[param(validate = "non_zero")]
+  pub seq: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
@@ -387,6 +390,12 @@ pub struct MessageParameters {
 
   #[param(validate = "non_zero")]
   pub length: u32,
+
+  #[param(validate = "non_zero")]
+  pub seq: u64,
+
+  #[param(validate = "non_zero")]
+  pub timestamp: u64,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]

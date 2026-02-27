@@ -279,7 +279,7 @@ mod tests {
     TestCase { name: "AUTH", input: b"AUTH id=1 token=a_token", expected: Ok(Message::Auth(AuthParameters {  token: StringAtom::from("a_token") })) },
     TestCase { name: "AUTH_ACK", input: b"AUTH_ACK id=1 succeeded=false challenge=1234567890 username=test_user nid=test_user@localhost", expected: Ok(Message::AuthAck(AuthAckParameters {  succeeded: Some(false), challenge: Some(StringAtom::from("1234567890")),  nid: Some(StringAtom::from("test_user@localhost")) })) },
     TestCase { name: "BROADCAST", input: b"BROADCAST id=1 channel=!1@localhost length=10 qos=1", expected: Ok(Message::Broadcast(BroadcastParameters { id: 1, channel: StringAtom::from("!1@localhost"), qos: Some(1), length: 10 })) },
-    TestCase { name: "BROADCAST_ACK", input: b"BROADCAST_ACK id=1", expected: Ok(Message::BroadcastAck(BroadcastAckParameters { id: 1 })) },
+    TestCase { name: "BROADCAST_ACK", input: b"BROADCAST_ACK id=1 seq=1", expected: Ok(Message::BroadcastAck(BroadcastAckParameters { id: 1, seq: 1 })) },
     TestCase {
             name: "CHAN_ACL",
             input: b"CHAN_ACL id=1 channel=!1@localhost type=publish nids:2=test_user_1@localhost example.com",
@@ -377,7 +377,7 @@ mod tests {
             total_count: None,
         })),
     },
-    TestCase { name: "MESSAGE", input: b"MESSAGE from=test_user2@localhost channel=!1@localhost length=10", expected: Ok(Message::Message(MessageParameters { from: StringAtom::from("test_user2@localhost"), channel: StringAtom::from("!1@localhost"), length: 10 })) },
+    TestCase { name: "MESSAGE", input: b"MESSAGE from=test_user2@localhost channel=!1@localhost length=10 seq=1 timestamp=1", expected: Ok(Message::Message(MessageParameters { from: StringAtom::from("test_user2@localhost"), channel: StringAtom::from("!1@localhost"), length: 10, seq: 1, timestamp: 1 })) },
     TestCase { name: "M2S_MOD_DIRECT", input: b"M2S_MOD_DIRECT id=1 targets=ortuman length=10", expected: Ok(Message::M2sModDirect(M2sModDirectParameters { id: 1, targets: Vec::from([StringAtom::from("ortuman")].as_slice()), length: 10 })) },
     TestCase { name: "M2S_MOD_DIRECT_ACK", input: b"M2S_MOD_DIRECT_ACK id=1", expected: Ok(Message::M2sModDirectAck(M2sModDirectAckParameters { id: 1 })) },
     TestCase { name: "MOD_DIRECT", input: b"MOD_DIRECT id=2 from=test_user@localhost length=10", expected: Ok(Message::ModDirect(ModDirectParameters { id: Some(2), from: StringAtom::from("test_user@localhost"), length: 10 })) },

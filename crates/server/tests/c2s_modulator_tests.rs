@@ -14,8 +14,8 @@ use narwhal_modulator::{OutboundPrivatePayload, create_m2s_listener};
 use narwhal_protocol::EventKind::{MemberJoined, MemberLeft};
 use narwhal_protocol::{
   AuthAckParameters, AuthParameters, BroadcastAckParameters, BroadcastParameters, ConnectParameters, ErrorParameters,
-  Event, EventParameters, JoinChannelParameters, ListChannelsParameters, Message, MessageParameters,
-  ModDirectAckParameters, ModDirectParameters,
+  Event, EventParameters, JoinChannelParameters, ListChannelsParameters, Message, ModDirectAckParameters,
+  ModDirectParameters,
 };
 use narwhal_test_util::{
   C2sSuite, TestModulator, assert_message, default_c2s_config, default_m2s_config, default_s2m_config,
@@ -385,7 +385,11 @@ async fn test_c2s_modulator_broadcast_payload_validation() -> anyhow::Result<()>
   suite.write_raw_bytes(TEST_USER_1, b"\n").await?;
 
   // Verify that the server sent the proper broadcast ack.
-  assert_message!(suite.read_message(TEST_USER_1).await?, Message::BroadcastAck, BroadcastAckParameters { id: 1 });
+  assert_message!(
+    suite.read_message(TEST_USER_1).await?,
+    Message::BroadcastAck,
+    BroadcastAckParameters { id: 1, seq: 1 }
+  );
 
   // Broadcast a non-valid payload.
   suite
@@ -482,18 +486,23 @@ async fn test_c2s_modulator_broadcast_payload_alteration() -> anyhow::Result<()>
   suite.write_raw_bytes(TEST_USER_1, b"\n").await?;
 
   // User 1 gets ack
-  assert_message!(suite.read_message(TEST_USER_1).await?, Message::BroadcastAck, BroadcastAckParameters { id: 2 });
+  assert_message!(
+    suite.read_message(TEST_USER_1).await?,
+    Message::BroadcastAck,
+    BroadcastAckParameters { id: 2, seq: 1 }
+  );
 
   // User 2 receives the reversed message
-  assert_message!(
-    suite.read_message(TEST_USER_2).await?,
-    Message::Message,
-    MessageParameters {
-      from: StringAtom::from("test_user_1@localhost"),
-      channel: StringAtom::from("!test1@localhost"),
-      length: reversed_input_text.len() as u32
-    }
-  );
+  match suite.read_message(TEST_USER_2).await? {
+    Message::Message(params) => {
+      assert_eq!(params.from, StringAtom::from("test_user_1@localhost"));
+      assert_eq!(params.channel, StringAtom::from("!test1@localhost"));
+      assert_eq!(params.length, reversed_input_text.len() as u32);
+      assert_eq!(params.seq, 1);
+      assert!(params.timestamp > 0, "timestamp must be non-zero");
+    },
+    msg => panic!("expected Message::Message, got {:?}", msg),
+  }
 
   // Read and verify the reversed payload from User 2's perspective
   let mut received_payload = vec![0u8; reversed_input_text.len()];

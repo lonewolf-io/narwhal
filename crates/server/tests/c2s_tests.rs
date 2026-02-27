@@ -7,9 +7,8 @@ use narwhal_protocol::{
   AclAction, AclType, BroadcastParameters, ChannelAclParameters, ConnectParameters, DeleteChannelAckParameters,
   DeleteChannelParameters, ErrorParameters, EventParameters, GetChannelAclParameters, JoinChannelAckParameters,
   JoinChannelParameters, LeaveChannelAckParameters, LeaveChannelParameters, ListChannelsAckParameters,
-  ListChannelsParameters, ListMembersAckParameters, ListMembersParameters, MessageParameters,
-  SetChannelAclAckParameters, SetChannelAclParameters, SetChannelConfigurationAckParameters,
-  SetChannelConfigurationParameters,
+  ListChannelsParameters, ListMembersAckParameters, ListMembersParameters, SetChannelAclAckParameters,
+  SetChannelAclParameters, SetChannelConfigurationAckParameters, SetChannelConfigurationParameters,
 };
 use narwhal_protocol::{IdentifyParameters, Message};
 use narwhal_test_util::{C2sSuite, assert_message, default_c2s_config};
@@ -1655,28 +1654,30 @@ async fn test_c2s_broadcast() -> anyhow::Result<()> {
   suite.broadcast(TEST_USER_1, "!test1@localhost", "Hello world!").await?;
 
   // Verify that the server sent the proper message to the other users.
-  assert_message!(
-    suite.read_message(TEST_USER_2).await?,
-    Message::Message,
-    MessageParameters {
-      from: StringAtom::from("test_user_1@localhost"),
-      channel: StringAtom::from("!test1@localhost"),
-      length: CONTENT_LENGTH
-    }
-  );
+  match suite.read_message(TEST_USER_2).await? {
+    Message::Message(params) => {
+      assert_eq!(params.from, StringAtom::from("test_user_1@localhost"));
+      assert_eq!(params.channel, StringAtom::from("!test1@localhost"));
+      assert_eq!(params.length, CONTENT_LENGTH);
+      assert_eq!(params.seq, 1);
+      assert!(params.timestamp > 0, "timestamp must be non-zero");
+    },
+    msg => panic!("expected Message::Message, got {:?}", msg),
+  }
 
   let mut payload: [u8; CONTENT_LENGTH as usize] = Default::default();
   suite.read_raw_bytes(TEST_USER_2, payload.as_mut_slice()).await?;
 
-  assert_message!(
-    suite.read_message(TEST_USER_3).await?,
-    Message::Message,
-    MessageParameters {
-      from: StringAtom::from("test_user_1@localhost"),
-      channel: StringAtom::from("!test1@localhost"),
-      length: CONTENT_LENGTH
-    }
-  );
+  match suite.read_message(TEST_USER_3).await? {
+    Message::Message(params) => {
+      assert_eq!(params.from, StringAtom::from("test_user_1@localhost"));
+      assert_eq!(params.channel, StringAtom::from("!test1@localhost"));
+      assert_eq!(params.length, CONTENT_LENGTH);
+      assert_eq!(params.seq, 1);
+      assert!(params.timestamp > 0, "timestamp must be non-zero");
+    },
+    msg => panic!("expected Message::Message, got {:?}", msg),
+  }
 
   let mut payload: [u8; CONTENT_LENGTH as usize] = Default::default();
   suite.read_raw_bytes(TEST_USER_3, payload.as_mut_slice()).await?;
@@ -1824,15 +1825,16 @@ async fn test_c2s_channel_acl_read_deny() -> anyhow::Result<()> {
   suite.broadcast(TEST_USER_1, "!test1@localhost", "Hello world!").await?;
 
   // Verify that the server sent the proper message to the other users.
-  assert_message!(
-    suite.read_message(TEST_USER_2).await?,
-    Message::Message,
-    MessageParameters {
-      from: StringAtom::from("test_user_1@localhost"),
-      channel: StringAtom::from("!test1@localhost"),
-      length: 12
-    }
-  );
+  match suite.read_message(TEST_USER_2).await? {
+    Message::Message(params) => {
+      assert_eq!(params.from, StringAtom::from("test_user_1@localhost"));
+      assert_eq!(params.channel, StringAtom::from("!test1@localhost"));
+      assert_eq!(params.length, 12);
+      assert_eq!(params.seq, 1);
+      assert!(params.timestamp > 0, "timestamp must be non-zero");
+    },
+    msg => panic!("expected Message::Message, got {:?}", msg),
+  }
 
   // Expect a read timeout for the other user.
   suite.expect_read_timeout(TEST_USER_3, Duration::from_secs(1)).await?;
