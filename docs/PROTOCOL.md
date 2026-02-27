@@ -583,10 +583,11 @@ Acknowledges a broadcast message. The timing of this acknowledgment depends on t
 
 **Parameters**:
 - `id` (u32, required): Request identifier matching the BROADCAST message (must be non-zero)
+- `seq` (u64, required): Monotonic sequence number assigned to this message within the channel (must be non-zero). Allows the sender to correlate their broadcast with the position it occupies in the channel's log.
 
 **Example**:
 ```
-BROADCAST_ACK id=3
+BROADCAST_ACK id=3 seq=42
 ```
 
 ---
@@ -598,13 +599,15 @@ Receives a broadcast message from a channel. This message includes a payload.
 **Direction**: Server → Client
 
 **Parameters**:
-- `from` (string, required): NID of the sender (must be non-empty)
 - `channel` (string, required): Channel ID where the message was sent (must be non-empty)
+- `from` (string, required): NID of the sender (must be non-empty)
 - `length` (u32, required): Payload size in bytes (must be non-zero)
+- `seq` (u64, required): Monotonic sequence number of this message within the channel (must be non-zero). Sequence numbers are assigned by the server in the order messages are received and are identical across all recipients of the same broadcast.
+- `timestamp` (u64, required): Server-assigned UTC timestamp in milliseconds since the Unix epoch at which the message was received (must be non-zero). The same value is delivered to all recipients of the same broadcast.
 
 **Example**:
 ```
-MESSAGE from=bob@example.com channel=!42@example.com length=512
+MESSAGE channel=!42@example.com from=bob@example.com length=512 seq=42 timestamp=1740643200000
 [512 bytes of binary payload follow]
 ```
 
@@ -1348,12 +1351,14 @@ Server → Client: EVENT kind=MEMBER_JOINED channel=!42@example.com nid=alice@ex
 ```
 Client → Server: BROADCAST id=5 channel=!42@example.com length=13
 Client → Server: [payload: "Hello, World!"]
-Server → Client: BROADCAST_ACK id=5
+Server → Client: BROADCAST_ACK id=5 seq=42
 
 [Server forwards to all channel members]
-Server → Other Clients: MESSAGE from=alice@example.com channel=!42@example.com length=13
+Server → Other Clients: MESSAGE channel=!42@example.com from=alice@example.com length=13 seq=42 timestamp=1740643200000
 Server → Other Clients: [payload: "Hello, World!"]
 ```
+
+The `seq` in `BROADCAST_ACK` matches the `seq` in the `MESSAGE` delivered to recipients — both refer to the same position in the channel's message log. The `timestamp` is assigned once by the server and is identical for all recipients of the same broadcast.
 
 ### Example 3a: Authentication with Modulator Support
 
@@ -1522,7 +1527,10 @@ Messages that expect responses use an `id` parameter for correlation:
 
 ## Version History
 
-- **Version 1.2** (Current):
+- **Version 1.3** (Current):
+  - Added `seq` (u64) to `BROADCAST_ACK`: the server echoes back the sequence number assigned to the message so the sender knows its position in the channel log
+  - Added `seq` (u64) and `timestamp` (u64) to `MESSAGE`: every delivered message now carries a per-channel monotonic sequence number and a server-assigned UTC millisecond timestamp; both values are identical across all recipients of the same broadcast
+- **Version 1.2**:
   - Added `SET_CHAN_ACL_ACK` message: SET_CHAN_ACL now returns a simple acknowledgment instead of the full ACL
   - Added `SET_CHAN_CONFIG_ACK` message: SET_CHAN_CONFIG now returns a simple acknowledgment instead of the full configuration
   - Changed `CHAN_ACL` to only be sent in response to GET_CHAN_ACL (not SET_CHAN_ACL)
