@@ -2,7 +2,7 @@
 
 All notable changes to Narwhal will be documented in this file.
 
-## main / unreleased
+## 0.5.0 (2026-03-02)
 
 * [CHANGE]: Migrate primary async runtime from tokio to monoio (io_uring). [#150](https://github.com/narwhal-io/narwhal/pull/150), [#165](https://github.com/narwhal-io/narwhal/pull/165)
 * [CHANGE]: Add `seq` and `timestamp` fields to `MESSAGE` and `BROADCAST_ACK`. Each delivered message now carries a per-channel monotonic sequence number and a server-assigned UTC millisecond timestamp. [#166](https://github.com/narwhal-io/narwhal/pull/166)
