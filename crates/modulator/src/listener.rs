@@ -16,7 +16,7 @@ use libc::{
 };
 use tracing::{error, info, trace, warn};
 
-use narwhal_common::conn::{ConnManager, Dispatcher, DispatcherFactory};
+use narwhal_common::conn::{ConnRuntime, Dispatcher, DispatcherFactory};
 use narwhal_common::service::{M2sService, S2mService, Service};
 
 use crate::config::*;
@@ -57,10 +57,10 @@ where
   /// The listener configuration.
   config: ListenerConfig,
 
-  /// The connection manager (shared with workers via `Arc`).
-  conn_mng: ConnManager<ST>,
+  /// The connection runtime.
+  conn_rt: ConnRuntime<ST>,
 
-  /// The dispatcher factory (cloned to each worker).
+  /// The dispatcher factory.
   dispatcher_factory: DF,
 
   /// Worker thread handles.
@@ -86,13 +86,13 @@ where
   /// # Arguments
   ///
   /// * `config` - The configuration for the listener
-  /// * `conn_mng` - The connection manager that will handle established connections
+  /// * `conn_rt` - The connection runtime that will handle established connections
   /// * `dispatcher_factory` - Factory for creating dispatchers for new connections
   ///
   /// # Returns
   ///
   /// Returns a new `Listener` instance that is ready to be bootstrapped.
-  pub fn new(mut config: ListenerConfig, conn_mng: ConnManager<ST>, dispatcher_factory: DF) -> Self {
+  pub fn new(mut config: ListenerConfig, conn_rt: ConnRuntime<ST>, dispatcher_factory: DF) -> Self {
     if config.workers_count == 0 {
       config.workers_count = core_affinity::get_core_ids().map(|c| c.len()).unwrap_or(1).max(1);
     }
@@ -101,7 +101,7 @@ where
 
     Listener {
       config,
-      conn_mng,
+      conn_rt,
       dispatcher_factory,
       worker_handles: Vec::with_capacity(workers_count),
       local_address: None,
@@ -117,19 +117,19 @@ where
   pub async fn bootstrap(&mut self) -> anyhow::Result<()> {
     assert!(self.worker_handles.is_empty(), "listener already bootstrapped");
 
-    // Bootstrap the dispatcher factory and connection manager.
+    // Bootstrap the dispatcher factory and connection runtime.
     let mut dispatcher_factory = self.dispatcher_factory.clone();
     dispatcher_factory.bootstrap().await?;
 
-    let conn_mng = self.conn_mng.clone();
-    conn_mng.bootstrap().await?;
+    let conn_rt = self.conn_rt.clone();
+    conn_rt.bootstrap().await?;
 
     match self.config.network.as_str() {
       TCP_NETWORK => {
-        self.bootstrap_tcp(conn_mng, dispatcher_factory).await?;
+        self.bootstrap_tcp(conn_rt, dispatcher_factory).await?;
       },
       UNIX_NETWORK => {
-        self.bootstrap_unix(conn_mng, dispatcher_factory).await?;
+        self.bootstrap_unix(conn_rt, dispatcher_factory).await?;
       },
       _ => {
         anyhow::bail!("unsupported network type: {}", self.config.network);
@@ -175,8 +175,8 @@ where
       _ => unreachable!("unsupported network type: {}", self.config.network),
     }
 
-    // Shutdown workers, then the connection manager and dispatcher factory.
-    self.conn_mng.shutdown().await?;
+    // Shutdown workers, then the connection runtime and dispatcher factory.
+    self.conn_rt.shutdown().await?;
     self.dispatcher_factory.shutdown().await?;
 
     self.shutdown_workers().await?;
@@ -184,7 +184,7 @@ where
     Ok(())
   }
 
-  async fn bootstrap_tcp(&mut self, conn_mng: ConnManager<ST>, dispatcher_factory: DF) -> anyhow::Result<()> {
+  async fn bootstrap_tcp(&mut self, conn_rt: ConnRuntime<ST>, dispatcher_factory: DF) -> anyhow::Result<()> {
     let mut bind_address: SocketAddr = self
       .config
       .bind_address
@@ -212,7 +212,7 @@ where
 
     self.local_address = Some(bind_address);
 
-    let ready_rxs = self.spawn_tcp_workers(bind_address, conn_mng, dispatcher_factory, pre_created_listener)?;
+    let ready_rxs = self.spawn_tcp_workers(bind_address, conn_rt, dispatcher_factory, pre_created_listener)?;
 
     // Wait for every worker to signal that it is ready to accept.
     for rx in ready_rxs {
@@ -233,7 +233,7 @@ where
   fn spawn_tcp_workers(
     &mut self,
     bind_address: SocketAddr,
-    conn_mng: ConnManager<ST>,
+    conn_rt: ConnRuntime<ST>,
     dispatcher_factory: DF,
     mut pre_created_listener: Option<std::net::TcpListener>,
   ) -> anyhow::Result<Vec<async_channel::Receiver<()>>> {
@@ -261,7 +261,7 @@ where
 
       let core_id = if !core_ids.is_empty() { Some(core_ids[worker_id % core_ids.len()]) } else { None };
 
-      let conn_mng = conn_mng.clone();
+      let conn_rt = conn_rt.clone();
       let dispatcher_factory = dispatcher_factory.clone();
       let worker_listener = pre_created_listener.take();
 
@@ -306,11 +306,11 @@ where
                     Ok((tcp_stream, remote_addr)) => {
                       trace!(worker_id, %remote_addr, service_type = ST::NAME, "accepted TCP connection");
 
-                      let conn_mng = conn_mng.clone();
+                      let conn_rt = conn_rt.clone();
                       let dispatcher_factory = dispatcher_factory.clone();
 
                       monoio::spawn(async move {
-                        conn_mng.run_connection(tcp_stream, dispatcher_factory).await;
+                        conn_rt.run_connection(tcp_stream, dispatcher_factory).await;
                       });
                     }
                     Err(e) => {
@@ -339,7 +339,7 @@ where
     Ok(ready_rxs)
   }
 
-  async fn bootstrap_unix(&mut self, conn_mng: ConnManager<ST>, dispatcher_factory: DF) -> anyhow::Result<()> {
+  async fn bootstrap_unix(&mut self, conn_rt: ConnRuntime<ST>, dispatcher_factory: DF) -> anyhow::Result<()> {
     if self.config.socket_path.is_empty() {
       anyhow::bail!("unix network selected but socket_path is not set");
     }
@@ -360,7 +360,7 @@ where
       );
     }
 
-    let ready_rxs = self.spawn_unix_worker(conn_mng, dispatcher_factory)?;
+    let ready_rxs = self.spawn_unix_worker(conn_rt, dispatcher_factory)?;
 
     for rx in ready_rxs {
       let _ = rx.recv().await;
@@ -378,7 +378,7 @@ where
 
   fn spawn_unix_worker(
     &mut self,
-    conn_mng: ConnManager<ST>,
+    conn_rt: ConnRuntime<ST>,
     dispatcher_factory: DF,
   ) -> anyhow::Result<Vec<async_channel::Receiver<()>>> {
     let socket_path = self.config.socket_path.clone();
@@ -425,11 +425,11 @@ where
                   Ok((unix_stream, _)) => {
                     trace!(worker_id, service_type = ST::NAME, "accepted Unix connection");
 
-                    let conn_mng = conn_mng.clone();
+                    let conn_rt = conn_rt.clone();
                     let dispatcher_factory = dispatcher_factory.clone();
 
                     monoio::spawn(async move {
-                      conn_mng.run_connection(unix_stream, dispatcher_factory).await;
+                      conn_rt.run_connection(unix_stream, dispatcher_factory).await;
                     });
                   }
                   Err(e) => {

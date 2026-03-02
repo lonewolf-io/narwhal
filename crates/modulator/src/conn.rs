@@ -31,11 +31,11 @@ use narwhal_client::monoio::m2s::M2sClient;
 
 use crate::{M2sServerConfig, Modulator, S2mServerConfig};
 
-/// The S2M connection manager.
-pub type S2mConnManager = narwhal_common::conn::ConnManager<S2mService>;
+/// The S2M connection runtime.
+pub type S2mConnRuntime = narwhal_common::conn::ConnRuntime<S2mService>;
 
-/// The M2S connection manager.
-pub type M2sConnManager = narwhal_common::conn::ConnManager<M2sService>;
+/// The M2S connection runtime.
+pub type M2sConnRuntime = narwhal_common::conn::ConnRuntime<M2sService>;
 
 #[derive(Clone)]
 pub struct M2sDispatcherFactory(Arc<RwLock<M2sDispatcherFactoryInner>>);

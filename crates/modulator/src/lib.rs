@@ -14,7 +14,7 @@ use anyhow::Ok;
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-use narwhal_common::conn::ConnManager;
+use narwhal_common::conn::ConnRuntime;
 use narwhal_common::service::{M2sService, S2mService};
 
 pub use crate::config::*;
@@ -271,9 +271,9 @@ where
 
   let server_config = arc_config.server.clone();
 
-  let conn_mng = ConnManager::<S2mService>::new(&server_config).await;
+  let conn_rt = ConnRuntime::<S2mService>::new(&server_config).await;
 
-  Ok(S2mListener::new(arc_config.server.listener.clone(), conn_mng, dispatcher_factory))
+  Ok(S2mListener::new(arc_config.server.listener.clone(), conn_rt, dispatcher_factory))
 }
 
 /// Creates an M2S listener.
@@ -298,7 +298,7 @@ pub async fn create_m2s_listener(
 
   let dispatcher_factory = conn::M2sDispatcherFactory::new(arc_config.clone(), payload_tx);
 
-  let conn_mng = ConnManager::<M2sService>::new(arc_config.as_ref()).await;
+  let conn_rt = ConnRuntime::<M2sService>::new(arc_config.as_ref()).await;
 
-  Ok(M2sListener::new(arc_config.listener.clone(), conn_mng, dispatcher_factory))
+  Ok(M2sListener::new(arc_config.listener.clone(), conn_rt, dispatcher_factory))
 }

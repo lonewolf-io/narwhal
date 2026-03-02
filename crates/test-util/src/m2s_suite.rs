@@ -30,7 +30,7 @@ pub struct M2sSuite {
 impl M2sSuite {
   /// Creates a new M2sSuite with the given configuration.
   ///
-  /// This is `async` because `ConnManager::new` (conn) is async.
+  /// This is `async` because `ConnRuntime::new` (conn) is async.
   pub async fn with_config(config: narwhal_modulator::M2sServerConfig) -> Self {
     let arc_config = Arc::new(config);
 
@@ -41,9 +41,9 @@ impl M2sSuite {
 
     let server_config = (*arc_config).clone();
 
-    let conn_mng = narwhal_modulator::conn::M2sConnManager::new(&server_config).await;
+    let conn_rt = narwhal_modulator::conn::M2sConnRuntime::new(&server_config).await;
 
-    let ln = M2sListener::new(server_config.listener.clone(), conn_mng, dispatcher_factory);
+    let ln = M2sListener::new(server_config.listener.clone(), conn_rt, dispatcher_factory);
 
     Self { config: arc_config, ln, payload_tx, payload_rx: Some(payload_rx) }
   }

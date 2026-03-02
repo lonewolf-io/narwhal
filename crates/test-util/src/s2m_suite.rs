@@ -23,7 +23,7 @@ pub struct S2mSuite<M: Modulator> {
 impl<M: Modulator> S2mSuite<M> {
   /// Creates a new S2mSuite with the given configuration and modulator.
   ///
-  /// This is `async` because `ConnManager::new` (conn) is async.
+  /// This is `async` because `ConnRuntime::new` (conn) is async.
   pub async fn with_config(config: narwhal_modulator::S2mServerConfig, modulator: M) -> Self {
     let arc_config = Arc::new(config);
 
@@ -32,9 +32,9 @@ impl<M: Modulator> S2mSuite<M> {
 
     let server_config = arc_config.server.clone();
 
-    let conn_mng = narwhal_modulator::conn::S2mConnManager::new(&server_config).await;
+    let conn_rt = narwhal_modulator::conn::S2mConnRuntime::new(&server_config).await;
 
-    let ln = S2mListener::new(server_config.listener.clone(), conn_mng, dispatcher_factory);
+    let ln = S2mListener::new(server_config.listener.clone(), conn_rt, dispatcher_factory);
 
     Self { config: arc_config, ln }
   }

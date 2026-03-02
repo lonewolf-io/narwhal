@@ -106,9 +106,9 @@ pub async fn run(config_file: Option<String>) -> anyhow::Result<()> {
   )
   .await?;
 
-  let c2s_conn_mng = c2s::conn::C2sConnManager::new(c2s_config.as_ref()).await;
+  let c2s_conn_rt = c2s::conn::C2sConnRuntime::new(c2s_config.as_ref()).await;
 
-  let mut c2s_ln = c2s::C2sListener::new(c2s_config.listener.clone(), c2s_conn_mng, c2s_dispatcher_factory);
+  let mut c2s_ln = c2s::C2sListener::new(c2s_config.listener.clone(), c2s_conn_rt, c2s_dispatcher_factory);
 
   // Start routing task for modulator private payloads.
   let mut route_m2s_payload_handle = Option::<(monoio::task::JoinHandle<()>, async_channel::Sender<()>)>::None;

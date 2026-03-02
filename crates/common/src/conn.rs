@@ -7,7 +7,7 @@ use std::io::Cursor;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use anyhow::anyhow;
@@ -21,7 +21,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, trace, warn};
 
 use async_channel::{Receiver, Sender, TryRecvError, bounded};
-use async_lock::RwLock;
+
 use slab::Slab;
 
 use narwhal_protocol::ErrorReason::{
@@ -322,13 +322,13 @@ pub struct Config {
   pub rate_limit: u32,
 }
 
-/// The connection manager inner state.
-struct ConnManagerInner<ST: Service> {
-  /// The connection manager configuration.
+/// The connection runtime inner state.
+struct ConnRuntimeInner<ST: Service> {
+  /// The configuration.
   config: Arc<Config>,
 
   /// The next handler ID to assign.
-  next_handler: usize,
+  next_handler: AtomicUsize,
 
   /// The number of active connections.
   active_connections: Arc<AtomicU32>,
@@ -349,11 +349,11 @@ struct ConnManagerInner<ST: Service> {
   _phantom: PhantomData<ST>,
 }
 
-impl<ST: Service> std::fmt::Debug for ConnManagerInner<ST> {
+impl<ST: Service> std::fmt::Debug for ConnRuntimeInner<ST> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-    f.debug_struct("ConnManagerInner")
+    f.debug_struct("ConnRuntimeInner")
       .field("config", &self.config)
-      .field("next_handler", &self.next_handler)
+      .field("next_handler", &self.next_handler.load(Ordering::Relaxed))
       .field("active_connections", &self.active_connections)
       .field("message_buffer_pool", &self.message_buffer_pool)
       .field("payload_buffer_pool", &self.payload_buffer_pool)
@@ -363,20 +363,20 @@ impl<ST: Service> std::fmt::Debug for ConnManagerInner<ST> {
   }
 }
 
-/// The connection manager.
+/// The connection runtime.
 #[derive(Debug)]
-pub struct ConnManager<ST: Service>(Arc<RwLock<ConnManagerInner<ST>>>);
+pub struct ConnRuntime<ST: Service>(Arc<ConnRuntimeInner<ST>>);
 
-// ===== impl ConnManager =====
+// === impl ConnRuntime ===
 
-impl<ST: Service> Clone for ConnManager<ST> {
+impl<ST: Service> Clone for ConnRuntime<ST> {
   fn clone(&self) -> Self {
     Self(self.0.clone())
   }
 }
 
-impl<ST: Service> ConnManager<ST> {
-  /// Creates a new connection manager.
+impl<ST: Service> ConnRuntime<ST> {
+  /// Creates a new connection runtime.
   pub async fn new(config: impl Into<Config>) -> Self {
     let conn_cfg = config.into();
 
@@ -411,9 +411,9 @@ impl<ST: Service> ConnManager<ST> {
 
     let shutdown_token = CancellationToken::new();
 
-    let inner = ConnManagerInner {
+    let inner = ConnRuntimeInner {
       config: Arc::new(conn_cfg),
-      next_handler: 1,
+      next_handler: AtomicUsize::new(1),
       active_connections: Arc::new(AtomicU32::new(0)),
       message_buffer_pool,
       payload_buffer_pool,
@@ -422,41 +422,37 @@ impl<ST: Service> ConnManager<ST> {
       _phantom: PhantomData,
     };
 
-    Self(Arc::new(RwLock::new(inner)))
+    Self(Arc::new(inner))
   }
 
-  /// Bootstraps the connection manager.
+  /// Bootstraps the connection runtime.
   pub async fn bootstrap(&self) -> anyhow::Result<()> {
-    let inner = self.0.read().await;
-
-    info!(max_conns = inner.config.max_connections, service_type = ST::NAME, "connection manager started");
+    info!(max_conns = self.0.config.max_connections, service_type = ST::NAME, "connection runtime started");
 
     Ok(())
   }
 
-  /// Shuts down the connection manager.
+  /// Shuts down the connection runtime.
   pub async fn shutdown(&self) -> anyhow::Result<()> {
-    let inner = self.0.read().await;
-
     // Notify the shutdown to all active connections.
-    inner.shutdown_token.cancel();
+    self.0.shutdown_token.cancel();
 
     // Poll until all active connections have drained.
     let deadline = std::time::Instant::now() + SHUTDOWN_DRAIN_TIMEOUT;
     loop {
-      if inner.active_connections.load(Ordering::SeqCst) == 0 {
+      if self.0.active_connections.load(Ordering::SeqCst) == 0 {
         break;
       }
       if std::time::Instant::now() >= deadline {
-        let remaining = inner.active_connections.load(Ordering::SeqCst);
-        warn!(remaining, service_type = ST::NAME, "connection manager timed out waiting for connections to drain");
+        let remaining = self.0.active_connections.load(Ordering::SeqCst);
+        warn!(remaining, service_type = ST::NAME, "connection runtime timed out waiting for connections to drain");
         break;
       }
 
       monoio::time::sleep(SHUTDOWN_DRAIN_POLL_INTERVAL).await;
     }
 
-    info!(service_type = ST::NAME, "connection manager stopped");
+    info!(service_type = ST::NAME, "connection runtime stopped");
 
     Ok(())
   }
@@ -469,20 +465,15 @@ impl<ST: Service> ConnManager<ST> {
   ) where
     S: AsyncReadRent + AsyncWriteRent + 'static,
   {
-    let mut inner = self.0.write().await;
-
     // Assign a unique handler
-    let handler = inner.next_handler;
-    inner.next_handler += 1;
+    let handler = self.0.next_handler.fetch_add(1, Ordering::SeqCst);
 
-    let config = inner.config.clone();
-    let message_buffer_pool = inner.message_buffer_pool.clone();
-    let payload_buffer_pool = inner.payload_buffer_pool.clone();
-    let newline_buffer = inner.newline_buffer.clone();
-    let active_connections = inner.active_connections.clone();
-    let shutdown_token = inner.shutdown_token.clone();
-
-    drop(inner);
+    let config = self.0.config.clone();
+    let message_buffer_pool = self.0.message_buffer_pool.clone();
+    let payload_buffer_pool = self.0.payload_buffer_pool.clone();
+    let newline_buffer = self.0.newline_buffer.clone();
+    let active_connections = self.0.active_connections.clone();
+    let shutdown_token = self.0.shutdown_token.clone();
 
     // Check if we've reached the maximum number of connections
     let current_connections = active_connections.fetch_add(1, Ordering::SeqCst);

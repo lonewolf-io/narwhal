@@ -7,7 +7,6 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.101"
 async-channel = "2.5.0"
-async-lock = "3.4.2"
 async-trait = "0.1.89"
 libc = "0.2.182"
 monoio = { version = "0.2.4", features = ["bytes"] }

@@ -28,8 +28,8 @@ use crate::c2s::{self, Config};
 use crate::channel::{ChannelConfig, ChannelManager};
 use crate::transmitter::{Resource, Transmitter};
 
-/// The C2S connection manager.
-pub type C2sConnManager = narwhal_common::conn::ConnManager<C2sService>;
+/// The C2S connection runtime.
+pub type C2sConnRuntime = narwhal_common::conn::ConnRuntime<C2sService>;
 
 #[derive(Clone)]
 /// A transmitter implementation for C2S connections.

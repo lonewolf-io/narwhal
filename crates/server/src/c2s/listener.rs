@@ -21,7 +21,7 @@ use narwhal_common::conn::DispatcherFactory;
 use narwhal_common::service::{C2sService, Service};
 
 use crate::c2s::config::ListenerConfig;
-use crate::c2s::conn::{C2sConnManager, C2sDispatcherFactory};
+use crate::c2s::conn::{C2sConnRuntime, C2sDispatcherFactory};
 use crate::util;
 use crate::util::tls::{create_tls_config, generate_self_signed_cert};
 
@@ -48,14 +48,14 @@ struct WorkerHandle {
 /// and connection management. It supports both self-signed certificates for
 /// localhost development and proper TLS certificates for production use.
 ///
-/// The listener works in conjunction with a connection manager to handle
+/// The listener works in conjunction with a connection runtime to handle
 /// individual client connections after they are established.
 pub struct C2sListener {
   /// The configuration for the C2S listener.
   config: ListenerConfig,
 
-  /// The connection manager.
-  conn_mng: C2sConnManager,
+  /// The connection runtime.
+  conn_rt: C2sConnRuntime,
 
   /// The dispatcher factory.
   dispatcher_factory: C2sDispatcherFactory,
@@ -75,13 +75,13 @@ impl C2sListener {
   /// # Arguments
   ///
   /// * `config` - The configuration for the C2S listener
-  /// * `conn_mng` - The connection manager that will handle established connections
+  /// * `conn_rt` - The connection runtime that will handle established connections
   /// * `dispatcher_factory` - The dispatcher factory that will create new dispatchers
   ///
   /// # Returns
   ///
   /// Returns a new `C2sListener` instance that is ready to be bootstrapped.
-  pub fn new(config: ListenerConfig, conn_mng: C2sConnManager, dispatcher_factory: C2sDispatcherFactory) -> Self {
+  pub fn new(config: ListenerConfig, conn_rt: C2sConnRuntime, dispatcher_factory: C2sDispatcherFactory) -> Self {
     let workers_count = if config.workers_count == 0 {
       // Default to number of available CPU cores
       core_affinity::get_core_ids().map(|cores| cores.len()).unwrap_or(1).max(1)
@@ -89,13 +89,7 @@ impl C2sListener {
       config.workers_count
     };
 
-    Self {
-      config,
-      conn_mng,
-      dispatcher_factory,
-      local_address: None,
-      worker_handles: Vec::with_capacity(workers_count),
-    }
+    Self { config, conn_rt, dispatcher_factory, local_address: None, worker_handles: Vec::with_capacity(workers_count) }
   }
 
   /// Bootstraps the listener, starting to accept incoming connections.
@@ -141,16 +135,16 @@ impl C2sListener {
 
     self.local_address = Some(bind_address);
 
-    // Bootstrap the connection manager.
+    // Bootstrap the connection runtime.
     self.dispatcher_factory.bootstrap().await?;
-    self.conn_mng.bootstrap().await?;
+    self.conn_rt.bootstrap().await?;
 
     // Spawn worker threads and wait for them to be ready.
     let ready_rxs = self.spawn_workers(
       worker_count,
       bind_address,
       tls_config,
-      self.conn_mng.clone(),
+      self.conn_rt.clone(),
       self.dispatcher_factory.clone(),
       pre_created_listener,
     )?;
@@ -189,8 +183,8 @@ impl C2sListener {
       "stopped accepting socket connections"
     );
 
-    // Wait for the connection manager to stop.
-    self.conn_mng.shutdown().await?;
+    // Wait for the connection runtime to stop.
+    self.conn_rt.shutdown().await?;
     self.dispatcher_factory.shutdown().await?;
 
     // Shutdown worker threads.
@@ -253,14 +247,14 @@ impl C2sListener {
   /// * `worker_count` - Number of worker threads to spawn
   /// * `bind_address` - The socket address for workers to bind to
   /// * `tls_config` - Shared TLS configuration
-  /// * `conn_mng` - Connection manager for registering connections
+  /// * `conn_rt` - Connection runtime for registering connections
   /// * `dispatcher_factory` - Factory for creating connection dispatchers
   fn spawn_workers(
     &mut self,
     worker_count: usize,
     bind_address: SocketAddr,
     tls_config: Arc<ServerConfig>,
-    conn_mng: C2sConnManager,
+    conn_rt: C2sConnRuntime,
     dispatcher_factory: C2sDispatcherFactory,
     mut pre_created_listener: Option<std::net::TcpListener>,
   ) -> anyhow::Result<Vec<async_channel::Receiver<()>>> {
@@ -314,7 +308,7 @@ impl C2sListener {
 
       // Clone shared data for this worker
       let tls_config = tls_config.clone();
-      let conn_mng = conn_mng.clone();
+      let conn_rt = conn_rt.clone();
       let dispatcher_factory = dispatcher_factory.clone();
       let worker_listener = pre_created_listener.take();
 
@@ -367,7 +361,7 @@ impl C2sListener {
 
                       let acceptor = acceptor.clone();
 
-                      let conn_mng = conn_mng.clone();
+                      let conn_rt = conn_rt.clone();
                       let dispatcher_factory = dispatcher_factory.clone();
 
                       monoio::spawn(async move {
@@ -376,7 +370,7 @@ impl C2sListener {
                           std::result::Result::Ok(tls_stream) => {
                             trace!(worker_id = worker_id, %remote_addr, "TLS handshake complete");
 
-                            conn_mng.run_connection(tls_stream, dispatcher_factory).await;
+                            conn_rt.run_connection(tls_stream, dispatcher_factory).await;
                           }
                           Err(e) => {
                             warn!(worker_id = worker_id, %remote_addr, error = ?e, service_type = C2sService::NAME, "TLS handshake failed");

@@ -103,13 +103,13 @@ impl C2sSuite {
       rate_limit: arc_config.limits.rate_limit,
     };
 
-    let conn_mng = c2s::conn::C2sConnManager::new(conn_cfg).await;
+    let conn_rt = c2s::conn::C2sConnRuntime::new(conn_cfg).await;
 
     let dispatcher_factory =
       c2s::conn::C2sDispatcherFactory::new(arc_config.clone(), channel_mng.clone(), c2s_router.clone(), modulator)
         .await?;
 
-    let ln = c2s::C2sListener::new(arc_config.listener.clone(), conn_mng.clone(), dispatcher_factory);
+    let ln = c2s::C2sListener::new(arc_config.listener.clone(), conn_rt.clone(), dispatcher_factory);
 
     Ok(Self {
       config: arc_config,

@@ -1053,7 +1053,6 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-channel",
- "async-lock",
  "async-trait",
  "futures",
  "libc",
