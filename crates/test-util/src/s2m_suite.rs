@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use monoio::net::TcpStream;
 
+use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::{Modulator, S2mListener};
 use narwhal_protocol::{Message, S2mConnectParameters};
 
@@ -16,6 +17,9 @@ pub struct S2mSuite<M: Modulator> {
 
   /// The modulator server listener.
   ln: S2mListener<M>,
+
+  /// The core dispatcher that owns the worker threads.
+  core_dispatcher: CoreDispatcher,
 }
 
 // ===== impl S2mSuite =====
@@ -34,9 +38,12 @@ impl<M: Modulator> S2mSuite<M> {
 
     let conn_rt = narwhal_modulator::conn::S2mConnRuntime::new(&server_config).await;
 
-    let ln = S2mListener::new(server_config.listener.clone(), conn_rt, dispatcher_factory);
+    let mut core_dispatcher = CoreDispatcher::new(1);
+    core_dispatcher.bootstrap().await.expect("core dispatcher bootstrap failed");
 
-    Self { config: arc_config, ln }
+    let ln = S2mListener::new(server_config.listener.clone(), conn_rt, dispatcher_factory, core_dispatcher.clone());
+
+    Self { config: arc_config, ln, core_dispatcher }
   }
 
   /// Returns the server configuration.
@@ -53,6 +60,7 @@ impl<M: Modulator> S2mSuite<M> {
   /// Tears down the test suite by shutting down the listener.
   pub async fn teardown(&mut self) -> anyhow::Result<()> {
     self.ln.shutdown().await?;
+    self.core_dispatcher.shutdown().await?;
     Ok(())
   }
 
@@ -134,7 +142,6 @@ pub fn default_s2m_config_with_secret(secret: &str) -> narwhal_modulator::S2mSer
     listener: narwhal_modulator::ListenerConfig {
       network: narwhal_modulator::TCP_NETWORK.to_string(),
       bind_address: "127.0.0.1:0".to_string(), // use a random port
-      workers_count: 1,
       ..Default::default()
     },
     limits: narwhal_modulator::Limits {

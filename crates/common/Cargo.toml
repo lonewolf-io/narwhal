@@ -6,6 +6,7 @@ license = "BSD-3-Clause"
 
 [dependencies]
 anyhow = "1.0.101"
+core_affinity = "0.8.3"
 async-channel = "2.5.0"
 async-trait = "0.1.89"
 libc = "0.2.182"

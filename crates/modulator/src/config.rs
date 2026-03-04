@@ -155,23 +155,13 @@ pub struct ListenerConfig {
   /// This is used when the network type is "unix".
   #[serde(default)]
   pub socket_path: String,
-
-  /// The number of worker threads for the connection pool.
-  /// When set to 0 (default), uses the number of available CPU cores.
-  #[serde(default = "default_workers_count")]
-  pub workers_count: usize,
 }
 
 // === impl ListenerConfig ===
 
 impl Default for ListenerConfig {
   fn default() -> Self {
-    Self {
-      network: default_network(),
-      bind_address: String::new(),
-      socket_path: String::new(),
-      workers_count: default_workers_count(),
-    }
+    Self { network: default_network(), bind_address: String::new(), socket_path: String::new() }
   }
 }
 
@@ -417,10 +407,6 @@ fn default_min_keep_alive_interval() -> Duration {
 
 fn default_request_timeout() -> Duration {
   Duration::from_secs(10)
-}
-
-fn default_workers_count() -> usize {
-  0
 }
 
 /// S2M server configuration.

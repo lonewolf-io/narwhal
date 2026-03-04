@@ -34,7 +34,7 @@ use narwhal_util::codec_monoio::{StreamReader, StreamReaderError};
 use narwhal_util::pool::{BucketedPool, MutablePoolBuffer, Pool, PoolBuffer};
 use narwhal_util::string_atom::StringAtom;
 
-use crate::runtime::Task;
+use crate::core_dispatcher::Task;
 use crate::service::Service;
 
 const SERVER_OVERLOADED_ERROR: &[u8] = b"ERROR reason=SERVER_OVERLOADED detail=\\\"max connections reached\\\"\n";
@@ -427,7 +427,7 @@ impl<ST: Service> ConnRuntime<ST> {
 
   /// Bootstraps the connection runtime.
   pub async fn bootstrap(&self) -> anyhow::Result<()> {
-    info!(max_conns = self.0.config.max_connections, service_type = ST::NAME, "connection runtime started");
+    info!(max_conns = self.0.config.max_connections, service_type = ST::NAME, "connection runtime bootstrapped");
 
     Ok(())
   }
@@ -452,7 +452,7 @@ impl<ST: Service> ConnRuntime<ST> {
       monoio::time::sleep(SHUTDOWN_DRAIN_POLL_INTERVAL).await;
     }
 
-    info!(service_type = ST::NAME, "connection runtime stopped");
+    info!(service_type = ST::NAME, "connection runtime shut down");
 
     Ok(())
   }

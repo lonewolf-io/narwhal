@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
 use narwhal_common::conn::ConnRuntime;
+use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_common::service::{M2sService, S2mService};
 
 pub use crate::config::*;
@@ -156,6 +157,7 @@ pub async fn init_modulator(
   config: Config,
   c2s_max_message_size: u32,
   c2s_max_payload_size: u32,
+  core_dispatcher: CoreDispatcher,
 ) -> anyhow::Result<ModulatorService> {
   if config.r#type.is_empty() {
     return Ok(ModulatorService {
@@ -223,7 +225,7 @@ pub async fn init_modulator(
 
         let (payload_tx, payload_rx) = async_broadcast::broadcast(M2S_SERVER_QUEUE_SIZE);
 
-        m2s_ln = Some(create_m2s_listener(m2s_config, payload_tx).await?);
+        m2s_ln = Some(create_m2s_listener(m2s_config, payload_tx, core_dispatcher).await?);
         m2s_payload_rx = Some(payload_rx);
       }
 
@@ -259,7 +261,11 @@ pub async fn init_modulator(
 ///
 /// Returns an `S2mListener` on success, or an error if:
 /// - Configuration validation fails
-pub async fn create_s2m_listener<M>(config: S2mServerConfig, modulator: M) -> anyhow::Result<S2mListener<M>>
+pub async fn create_s2m_listener<M>(
+  config: S2mServerConfig,
+  modulator: M,
+  core_dispatcher: CoreDispatcher,
+) -> anyhow::Result<S2mListener<M>>
 where
   M: Modulator,
 {
@@ -273,7 +279,7 @@ where
 
   let conn_rt = ConnRuntime::<S2mService>::new(&server_config).await;
 
-  Ok(S2mListener::new(arc_config.server.listener.clone(), conn_rt, dispatcher_factory))
+  Ok(S2mListener::new(arc_config.server.listener.clone(), conn_rt, dispatcher_factory, core_dispatcher))
 }
 
 /// Creates an M2S listener.
@@ -291,6 +297,7 @@ where
 pub async fn create_m2s_listener(
   config: M2sServerConfig,
   payload_tx: async_broadcast::Sender<OutboundPrivatePayload>,
+  core_dispatcher: CoreDispatcher,
 ) -> anyhow::Result<M2sListener> {
   config.validate().map_err(|e| anyhow::anyhow!("failed to validate m2s server configuration: {}", e))?;
 
@@ -300,5 +307,5 @@ pub async fn create_m2s_listener(
 
   let conn_rt = ConnRuntime::<M2sService>::new(arc_config.as_ref()).await;
 
-  Ok(M2sListener::new(arc_config.listener.clone(), conn_rt, dispatcher_factory))
+  Ok(M2sListener::new(arc_config.listener.clone(), conn_rt, dispatcher_factory, core_dispatcher))
 }

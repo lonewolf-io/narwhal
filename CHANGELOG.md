@@ -2,6 +2,10 @@
 
 All notable changes to Narwhal will be documented in this file.
 
+## Unreleased
+
+* [ENHANCEMENT]: Extract thread and runtime management into a shared `CoreDispatcher`. [#172](https://github.com/narwhal-io/narwhal/pull/172)
+
 ## 0.5.0 (2026-03-02)
 
 * [CHANGE]: Migrate primary async runtime from tokio to monoio (io_uring). [#150](https://github.com/narwhal-io/narwhal/pull/150), [#165](https://github.com/narwhal-io/narwhal/pull/165)

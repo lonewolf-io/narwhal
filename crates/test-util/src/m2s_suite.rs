@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_broadcast;
 use monoio::net::TcpStream;
 
+use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::{M2sListener, OutboundPrivatePayload};
 use narwhal_protocol::{M2sConnectParameters, Message};
 
@@ -17,6 +18,9 @@ pub struct M2sSuite {
 
   /// The modulator server listener.
   ln: M2sListener,
+
+  /// The core dispatcher that owns the worker threads.
+  core_dispatcher: CoreDispatcher,
 
   /// The broadcast sender for outbound private payloads.
   payload_tx: async_broadcast::Sender<OutboundPrivatePayload>,
@@ -43,9 +47,12 @@ impl M2sSuite {
 
     let conn_rt = narwhal_modulator::conn::M2sConnRuntime::new(&server_config).await;
 
-    let ln = M2sListener::new(server_config.listener.clone(), conn_rt, dispatcher_factory);
+    let mut core_dispatcher = CoreDispatcher::new(1);
+    core_dispatcher.bootstrap().await.expect("core dispatcher bootstrap failed");
 
-    Self { config: arc_config, ln, payload_tx, payload_rx: Some(payload_rx) }
+    let ln = M2sListener::new(server_config.listener.clone(), conn_rt, dispatcher_factory, core_dispatcher.clone());
+
+    Self { config: arc_config, ln, core_dispatcher, payload_tx, payload_rx: Some(payload_rx) }
   }
 
   /// Returns the server configuration.
@@ -72,6 +79,7 @@ impl M2sSuite {
   /// Tears down the test suite by shutting down the listener.
   pub async fn teardown(&mut self) -> anyhow::Result<()> {
     self.ln.shutdown().await?;
+    self.core_dispatcher.shutdown().await?;
     Ok(())
   }
 
@@ -149,7 +157,6 @@ pub fn default_m2s_config() -> narwhal_modulator::M2sServerConfig {
     listener: narwhal_modulator::ListenerConfig {
       network: narwhal_modulator::TCP_NETWORK.to_string(),
       bind_address: "127.0.0.1:0".to_string(), // use a random port
-      workers_count: 1,
       ..Default::default()
     },
     limits: narwhal_modulator::Limits {

@@ -1,21 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use std::net::SocketAddr;
-
 use std::sync::Arc;
-use std::thread;
 
 use anyhow::{Ok, anyhow};
 use async_channel::{Sender, bounded};
 use futures::{FutureExt, select};
-use libc::{
-  SIG_BLOCK, SIG_SETMASK, SIGHUP, SIGINT, SIGPIPE, SIGQUIT, SIGTERM, SIGUSR1, SIGUSR2, pthread_sigmask, sigaddset,
-  sigemptyset, sigset_t,
-};
 use monoio::net::TcpListener;
 use monoio_rustls::TlsAcceptor;
 use rustls::ServerConfig;
-use tracing::{error, info, trace, warn};
+use tracing::{info, trace, warn};
 
 use narwhal_common::conn::DispatcherFactory;
 use narwhal_common::service::{C2sService, Service};
@@ -24,32 +18,15 @@ use crate::c2s::config::ListenerConfig;
 use crate::c2s::conn::{C2sConnRuntime, C2sDispatcherFactory};
 use crate::util;
 use crate::util::tls::{create_tls_config, generate_self_signed_cert};
+use narwhal_common::core_dispatcher::CoreDispatcher;
 
 const LOCALHOST_DOMAIN: &str = "localhost";
 
-/// Handle for a worker thread.
-///
-/// Tracks the thread join handle and provides a channel to signal
-/// the worker to shut down gracefully.
-struct WorkerHandle {
-  /// The thread join handle.
-  thread_handle: thread::JoinHandle<anyhow::Result<()>>,
-
-  /// The worker identifier.
-  worker_id: usize,
-
-  /// Channel to signal the worker to shutdown.
-  shutdown_tx: Sender<()>,
-}
-
 /// A TLS-enabled TCP listener for client-to-server (C2S) connections.
 ///
-/// The `Listener` manages incoming client connections, handling TLS negotiation
-/// and connection management. It supports both self-signed certificates for
-/// localhost development and proper TLS certificates for production use.
-///
-/// The listener works in conjunction with a connection runtime to handle
-/// individual client connections after they are established.
+/// The `C2sListener` manages incoming client connections, handling TLS negotiation
+/// and connection management. Accept loops are dispatched to per-core runtimes
+/// via a `CoreDispatcher`.
 pub struct C2sListener {
   /// The configuration for the C2S listener.
   config: ListenerConfig,
@@ -60,14 +37,17 @@ pub struct C2sListener {
   /// The dispatcher factory.
   dispatcher_factory: C2sDispatcherFactory,
 
+  /// The core dispatcher.
+  core_dispatcher: CoreDispatcher,
+
   /// The local address of the listener.
   local_address: Option<SocketAddr>,
 
-  /// Worker thread handles.
-  worker_handles: Vec<WorkerHandle>,
+  /// Shutdown senders for each accept loop — one per shard.
+  shutdown_txs: Vec<Sender<()>>,
 }
 
-// ===== impl C2sListener =====
+// === impl C2sListener ===
 
 impl C2sListener {
   /// Creates a new C2S listener with the given configuration and connection manager.
@@ -77,19 +57,18 @@ impl C2sListener {
   /// * `config` - The configuration for the C2S listener
   /// * `conn_rt` - The connection runtime that will handle established connections
   /// * `dispatcher_factory` - The dispatcher factory that will create new dispatchers
+  /// * `core_dispatcher` - The core dispatcher for spawning accept loops on per-core runtimes
   ///
   /// # Returns
   ///
   /// Returns a new `C2sListener` instance that is ready to be bootstrapped.
-  pub fn new(config: ListenerConfig, conn_rt: C2sConnRuntime, dispatcher_factory: C2sDispatcherFactory) -> Self {
-    let workers_count = if config.workers_count == 0 {
-      // Default to number of available CPU cores
-      core_affinity::get_core_ids().map(|cores| cores.len()).unwrap_or(1).max(1)
-    } else {
-      config.workers_count
-    };
-
-    Self { config, conn_rt, dispatcher_factory, local_address: None, worker_handles: Vec::with_capacity(workers_count) }
+  pub fn new(
+    config: ListenerConfig,
+    conn_rt: C2sConnRuntime,
+    dispatcher_factory: C2sDispatcherFactory,
+    core_dispatcher: CoreDispatcher,
+  ) -> Self {
+    Self { config, conn_rt, dispatcher_factory, core_dispatcher, local_address: None, shutdown_txs: Vec::new() }
   }
 
   /// Bootstraps the listener, starting to accept incoming connections.
@@ -105,8 +84,7 @@ impl C2sListener {
   /// * TLS configuration fails (invalid certificates or keys)
   /// * Unable to bind to the configured address and port
   pub async fn bootstrap(&mut self) -> anyhow::Result<()> {
-    let worker_count = self.worker_handles.capacity();
-    assert!(worker_count > 0, "worker_count must be greater than 0");
+    let worker_count = self.core_dispatcher.shard_count();
 
     // Load TLS config
     let tls_config = self.load_tls_config()?;
@@ -139,18 +117,36 @@ impl C2sListener {
     self.dispatcher_factory.bootstrap().await?;
     self.conn_rt.bootstrap().await?;
 
-    // Spawn worker threads and wait for them to be ready.
-    let ready_rxs = self.spawn_workers(
-      worker_count,
-      bind_address,
-      tls_config,
-      self.conn_rt.clone(),
-      self.dispatcher_factory.clone(),
-      pre_created_listener,
-    )?;
+    // Spawn accept loops on each shard's runtime.
+    for worker_id in 0..worker_count {
+      let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
+      let (ready_tx, ready_rx) = bounded::<()>(1);
 
-    for rx in ready_rxs {
-      let _ = rx.recv().await;
+      let tls_config = tls_config.clone();
+      let conn_rt = self.conn_rt.clone();
+      let dispatcher_factory = self.dispatcher_factory.clone();
+      let worker_listener = if worker_id == 0 { pre_created_listener.take() } else { None };
+
+      self
+        .core_dispatcher
+        .dispatch_at_shard(worker_id, move || {
+          run_accept_loop(
+            worker_id,
+            bind_address,
+            worker_listener,
+            tls_config,
+            conn_rt,
+            dispatcher_factory,
+            ready_tx,
+            shutdown_rx,
+          )
+        })
+        .await?;
+
+      // Wait for this worker to be ready before spawning the next.
+      let _ = ready_rx.recv().await;
+
+      self.shutdown_txs.push(shutdown_tx);
     }
 
     info!(
@@ -187,20 +183,15 @@ impl C2sListener {
     self.conn_rt.shutdown().await?;
     self.dispatcher_factory.shutdown().await?;
 
-    // Shutdown worker threads.
-    self.shutdown_workers().await?;
+    // Signal all accept loops to stop.
+    for tx in &self.shutdown_txs {
+      let _ = tx.send(()).await;
+    }
 
     Ok(())
   }
 
   /// Returns the local address that the listener is bound to.
-  ///
-  /// This method will return `None` if called before `bootstrap()` or if
-  /// the listener failed to bind to an address.
-  ///
-  /// # Returns
-  ///
-  /// Returns the socket address that the listener is bound to, if available.
   pub fn local_address(&self) -> Option<SocketAddr> {
     self.local_address
   }
@@ -235,230 +226,75 @@ impl C2sListener {
   fn get_address(&self) -> String {
     format!("{}:{}", self.config.bind_address, self.config.port)
   }
+}
 
-  /// Spawns worker threads with dedicated runtime and CPU core affinity.
-  ///
-  /// Each worker thread is pinned to a specific CPU core for better cache locality and
-  /// reduced context switching. Workers are distributed across available cores using
-  /// round-robin if there are more workers than cores.
-  ///
-  /// # Arguments
-  ///
-  /// * `worker_count` - Number of worker threads to spawn
-  /// * `bind_address` - The socket address for workers to bind to
-  /// * `tls_config` - Shared TLS configuration
-  /// * `conn_rt` - Connection runtime for registering connections
-  /// * `dispatcher_factory` - Factory for creating connection dispatchers
-  fn spawn_workers(
-    &mut self,
-    worker_count: usize,
-    bind_address: SocketAddr,
-    tls_config: Arc<ServerConfig>,
-    conn_rt: C2sConnRuntime,
-    dispatcher_factory: C2sDispatcherFactory,
-    mut pre_created_listener: Option<std::net::TcpListener>,
-  ) -> anyhow::Result<Vec<async_channel::Receiver<()>>> {
-    let mut ready_rxs = Vec::with_capacity(worker_count);
-
-    // Get available CPU cores for affinity
-    let core_ids = core_affinity::get_core_ids().unwrap_or_default();
-    let available_cores = core_ids.len();
-
-    if available_cores == 0 {
-      warn!(service_type = C2sService::NAME, "no CPU cores detected, workers will run without core affinity");
-    } else {
-      trace!(
-        worker_count = worker_count,
-        available_cores = available_cores,
-        service_type = C2sService::NAME,
-        "spawning worker threads with CPU core affinity"
-      );
+#[allow(clippy::too_many_arguments)]
+async fn run_accept_loop(
+  worker_id: usize,
+  bind_address: SocketAddr,
+  pre_created_listener: Option<std::net::TcpListener>,
+  tls_config: Arc<ServerConfig>,
+  conn_rt: C2sConnRuntime,
+  dispatcher_factory: C2sDispatcherFactory,
+  ready_tx: async_channel::Sender<()>,
+  shutdown_rx: async_channel::Receiver<()>,
+) {
+  let listener = if let Some(std_listener) = pre_created_listener {
+    match TcpListener::from_std(std_listener) {
+      std::result::Result::Ok(l) => l,
+      Err(e) => {
+        warn!(worker_id, error = ?e, service_type = C2sService::NAME, "failed to create listener from pre-created socket");
+        return;
+      },
     }
+  } else {
+    match create_reusable_listener(bind_address).await {
+      std::result::Result::Ok(l) => l,
+      Err(e) => {
+        warn!(worker_id, error = ?e, service_type = C2sService::NAME, "failed to create listener");
+        return;
+      },
+    }
+  };
 
-    // Block signals before creating worker threads so they don't capture SIGINT/SIGTERM
-    let old_mask = {
-      let mut new_mask: sigset_t = unsafe { std::mem::zeroed() };
-      unsafe {
-        sigemptyset(&mut new_mask);
-        sigaddset(&mut new_mask, SIGINT);
-        sigaddset(&mut new_mask, SIGTERM);
-        sigaddset(&mut new_mask, SIGQUIT);
-        sigaddset(&mut new_mask, SIGHUP);
-        sigaddset(&mut new_mask, SIGUSR1);
-        sigaddset(&mut new_mask, SIGUSR2);
-        sigaddset(&mut new_mask, SIGPIPE);
-      }
+  // Signal that this worker is ready to accept.
+  let _ = ready_tx.send(()).await;
 
-      let mut old_mask: sigset_t = unsafe { std::mem::zeroed() };
-      unsafe {
-        pthread_sigmask(SIG_BLOCK, &new_mask, &mut old_mask);
-      }
+  let acceptor = TlsAcceptor::from(tls_config);
 
-      old_mask
-    };
+  // Accept loop
+  loop {
+    select! {
+      result = listener.accept().fuse() => {
+        match result {
+          std::result::Result::Ok((tcp_stream, remote_addr)) => {
+            trace!(worker_id, %remote_addr, service_type = C2sService::NAME, "accepted connection");
 
-    for worker_id in 0..worker_count {
-      let (shutdown_tx, shutdown_rx) = bounded::<()>(1);
+            let acceptor = acceptor.clone();
+            let conn_rt = conn_rt.clone();
+            let dispatcher_factory = dispatcher_factory.clone();
 
-      let (ready_tx, ready_rx) = bounded::<()>(1);
-      ready_rxs.push(ready_rx);
-
-      // Determine which core to pin this worker to (round-robin if more workers than cores)
-      let core_id = if !core_ids.is_empty() { Some(core_ids[worker_id % core_ids.len()]) } else { None };
-
-      // Clone shared data for this worker
-      let tls_config = tls_config.clone();
-      let conn_rt = conn_rt.clone();
-      let dispatcher_factory = dispatcher_factory.clone();
-      let worker_listener = pre_created_listener.take();
-
-      let handle =
-        thread::Builder::new().name(format!("c2s-worker-{}", worker_id)).spawn(move || -> anyhow::Result<()> {
-          trace!(worker_id = worker_id, service_type = C2sService::NAME, "worker thread started");
-
-          // Pin this thread to a specific CPU core for better cache locality
-          if let Some(core_id) = core_id {
-            let _ = core_affinity::set_for_current(core_id);
+            monoio::spawn(async move {
+              match acceptor.accept(tcp_stream).await {
+                std::result::Result::Ok(tls_stream) => {
+                  trace!(worker_id, %remote_addr, "TLS handshake complete");
+                  conn_rt.run_connection(tls_stream, dispatcher_factory).await;
+                }
+                Err(e) => {
+                  warn!(worker_id, %remote_addr, error = ?e, service_type = C2sService::NAME, "TLS handshake failed");
+                }
+              }
+            });
           }
-
-          // Create a thread-local monoio runtime
-          let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
-            .enable_all()
-            .build()
-            .map_err(|e| anyhow!("failed to create runtime for c2s worker {}: {}", worker_id, e))?;
-
-          rt.block_on(async move {
-            let listener = if let Some(std_listener) = worker_listener {
-              match TcpListener::from_std(std_listener) {
-                std::result::Result::Ok(l) => l,
-                Err(e) => {
-                  warn!(worker_id = worker_id, error = ?e, service_type = C2sService::NAME, "failed to create listener from pre-created socket");
-                  return;
-                },
-              }
-            } else {
-              match create_reusable_listener(bind_address).await {
-                std::result::Result::Ok(l) => l,
-                Err(e) => {
-                  warn!(worker_id = worker_id, error = ?e, service_type = C2sService::NAME, "failed to create listener");
-                  return;
-                },
-              }
-            };
-
-            // Signal that this worker's is ready to accept.
-            let _ = ready_tx.send(()).await;
-
-            let acceptor = TlsAcceptor::from(tls_config.clone());
-
-            // Accept loop
-            loop {
-              select! {
-                result = listener.accept().fuse() => {
-                  match result {
-                    std::result::Result::Ok((tcp_stream, remote_addr)) => {
-                      trace!(worker_id = worker_id, %remote_addr, service_type = C2sService::NAME, "accepted connection");
-
-                      let acceptor = acceptor.clone();
-
-                      let conn_rt = conn_rt.clone();
-                      let dispatcher_factory = dispatcher_factory.clone();
-
-                      monoio::spawn(async move {
-                        // Perform TLS handshake
-                        match acceptor.accept(tcp_stream).await {
-                          std::result::Result::Ok(tls_stream) => {
-                            trace!(worker_id = worker_id, %remote_addr, "TLS handshake complete");
-
-                            conn_rt.run_connection(tls_stream, dispatcher_factory).await;
-                          }
-                          Err(e) => {
-                            warn!(worker_id = worker_id, %remote_addr, error = ?e, service_type = C2sService::NAME, "TLS handshake failed");
-                          }
-                        }
-                      });
-                    }
-                    Err(e) => {
-                      warn!(worker_id = worker_id, error = ?e, service_type = C2sService::NAME, "accept error");
-                    }
-                  }
-                }
-                _ = shutdown_rx.recv().fuse() => {
-                  break;
-                }
-              }
-            }
-          });
-
-          trace!(worker_id = worker_id, service_type = C2sService::NAME, "worker thread stopped");
-
-          std::result::Result::Ok(())
-        })?;
-
-      self.worker_handles.push(WorkerHandle { thread_handle: handle, worker_id, shutdown_tx });
-    }
-
-    // Restore the original signal mask for the main thread
-    unsafe {
-      pthread_sigmask(SIG_SETMASK, &old_mask, std::ptr::null_mut());
-    }
-
-    std::result::Result::Ok(ready_rxs)
-  }
-
-  /// Shuts down all worker threads gracefully.
-  ///
-  /// Signals each worker to stop and waits for all threads to complete.
-  /// Handles thread panics gracefully without propagating them.
-  async fn shutdown_workers(&mut self) -> anyhow::Result<()> {
-    if self.worker_handles.is_empty() {
-      return std::result::Result::Ok(());
-    }
-
-    trace!(worker_count = self.worker_handles.len(), service_type = C2sService::NAME, "shutting down worker threads");
-
-    // Signal all workers to shutdown
-    for worker in &self.worker_handles {
-      if let Err(e) = worker.shutdown_tx.send(()).await {
-        warn!(
-          worker_id = worker.worker_id,
-          error = ?e,
-          service_type = C2sService::NAME,
-          "failed to send shutdown signal to worker"
-        );
+          Err(e) => {
+            warn!(worker_id, error = ?e, service_type = C2sService::NAME, "accept error");
+          }
+        }
+      }
+      _ = shutdown_rx.recv().fuse() => {
+        break;
       }
     }
-
-    // Join all worker threads
-    let handles = std::mem::take(&mut self.worker_handles);
-
-    for worker in handles {
-      match worker.thread_handle.join() {
-        std::result::Result::Ok(std::result::Result::Ok(())) => {
-          trace!(worker_id = worker.worker_id, service_type = C2sService::NAME, "worker thread joined successfully");
-        },
-        std::result::Result::Ok(Err(e)) => {
-          error!(
-            worker_id = worker.worker_id,
-            error = ?e,
-            service_type = C2sService::NAME,
-            "worker thread returned error"
-          );
-        },
-        Err(e) => {
-          warn!(
-            worker_id = worker.worker_id,
-            error = ?e,
-            service_type = C2sService::NAME,
-            "worker thread panicked"
-          );
-        },
-      }
-    }
-
-    trace!(service_type = C2sService::NAME, "all worker threads stopped");
-
-    std::result::Result::Ok(())
   }
 }
 

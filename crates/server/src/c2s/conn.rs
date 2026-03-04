@@ -73,7 +73,7 @@ impl std::fmt::Debug for C2sTransmitter {
 #[derive(Clone, Debug)]
 pub struct C2sDispatcherFactory(Arc<RwLock<C2sDispatcherFactoryInner>>);
 
-// ===== impl C2sDispatcherFactory =====
+// ==== impl C2sDispatcherFactory ====
 
 impl C2sDispatcherFactory {
   /// Creates a new C2S `C2sDispatcherFactory`.

@@ -9,7 +9,6 @@ use async_trait::async_trait;
 use clap::Parser;
 use csv::Reader;
 
-use futures::{select, FutureExt};
 use tracing::info;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -20,6 +19,7 @@ use narwhal_modulator::modulator::{
   ForwardBroadcastPayloadResult, ForwardEventRequest, ForwardEventResponse, Operation, Operations,
   ReceivePrivatePayloadRequest, ReceivePrivatePayloadResponse, SendPrivatePayloadRequest, SendPrivatePayloadResponse,
 };
+use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::{create_s2m_listener, Modulator};
 use narwhal_util::string_atom::StringAtom;
 
@@ -138,7 +138,7 @@ fn main() {
 
   let modulator = CsvPayloadValidator {};
 
-  let rt = compio::runtime::Runtime::new().unwrap();
+  let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new().enable_all().build().unwrap();
 
   rt.block_on(async {
     match run_s2m_server(config, modulator).await {
@@ -154,7 +154,10 @@ where
 {
   let protocol_name = modulator.protocol_name().await?;
 
-  let mut ln = create_s2m_listener(config, modulator).await?;
+  let mut core_dispatcher = CoreDispatcher::new(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
+  core_dispatcher.bootstrap().await?;
+
+  let mut ln = create_s2m_listener(config, modulator, core_dispatcher.clone()).await?;
 
   info!(protocol_name = protocol_name.as_ref(), "📡 starting s2m server...");
 
@@ -168,6 +171,7 @@ where
 
   // Stop listener.
   ln.shutdown().await?;
+  core_dispatcher.shutdown().await?;
 
   info!(protocol_name = protocol_name.as_ref(), "🌙 that's all, folks!");
 
@@ -188,10 +192,17 @@ fn load_config(config_file: Option<String>) -> anyhow::Result<S2mServerConfig> {
 }
 
 async fn wait_for_stop_signal() -> anyhow::Result<()> {
-  let sig_term = compio_signal::unix::signal(libc::SIGTERM);
+  let (tx, rx) = async_channel::bounded::<()>(1);
 
-  select! {
-    _ = compio_signal::ctrl_c().fuse() => Ok(()),
-    _ = sig_term.fuse() => Ok(()),
+  for sig in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+    let tx = tx.clone();
+    unsafe {
+      signal_hook::low_level::register(sig, move || {
+        let _ = tx.try_send(());
+      })?;
+    }
   }
+
+  let _ = rx.recv().await;
+  Ok(())
 }

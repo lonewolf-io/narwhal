@@ -211,7 +211,6 @@ pub fn default_s2m_config(shared_secret: &str) -> narwhal_modulator::S2mServerCo
       listener: narwhal_modulator::ListenerConfig {
         network: narwhal_modulator::TCP_NETWORK.to_string(),
         bind_address: "127.0.0.1:0".to_string(), // use a random port
-        workers_count: 1,
         ..Default::default()
       },
       shared_secret: shared_secret.to_string(),

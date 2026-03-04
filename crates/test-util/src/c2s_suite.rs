@@ -12,6 +12,7 @@ use monoio_rustls::{ClientTlsStream, TlsConnector};
 use pki_types::ServerName;
 
 use narwhal_client::monoio::s2m::S2mClient;
+use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::{Modulator, OutboundPrivatePayload};
 use narwhal_protocol::{
   AclAction, AclType, BroadcastParameters, ConnectParameters, IdentifyParameters, JoinChannelParameters,
@@ -34,6 +35,9 @@ pub struct C2sSuite {
 
   /// The server listener.
   ln: c2s::C2sListener,
+
+  /// The runtime dispatcher.
+  runtime_dispatcher: CoreDispatcher,
 
   /// The local router.
   local_router: c2s::Router,
@@ -109,11 +113,20 @@ impl C2sSuite {
       c2s::conn::C2sDispatcherFactory::new(arc_config.clone(), channel_mng.clone(), c2s_router.clone(), modulator)
         .await?;
 
-    let ln = c2s::C2sListener::new(arc_config.listener.clone(), conn_rt.clone(), dispatcher_factory);
+    let mut runtime_dispatcher = CoreDispatcher::new(narwhal_server::num_workers());
+    runtime_dispatcher.bootstrap().await?;
+
+    let ln = c2s::C2sListener::new(
+      arc_config.listener.clone(),
+      conn_rt.clone(),
+      dispatcher_factory,
+      runtime_dispatcher.clone(),
+    );
 
     Ok(Self {
       config: arc_config,
       ln,
+      runtime_dispatcher,
       m2s_payload_rx,
       m2s_router_task_handle: None,
       local_router: c2s_router,
@@ -141,6 +154,9 @@ impl C2sSuite {
       shutdown_tx.close();
       let _ = handle.await;
     }
+
+    self.runtime_dispatcher.shutdown().await?;
+
     Ok(())
   }
 
@@ -344,7 +360,6 @@ pub fn default_c2s_config() -> c2s::Config {
   c2s::Config {
     listener: c2s::ListenerConfig {
       port: 0, // use a random port
-      workers_count: 1,
       ..Default::default()
     },
     limits: c2s::Limits {

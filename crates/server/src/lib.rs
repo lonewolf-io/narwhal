@@ -19,7 +19,6 @@ use crate::notifier::Notifier;
 use crate::router::GlobalRouter;
 use crate::version::{GIT_BRANCH_NAME, GIT_COMMIT_HASH, VERSION};
 
-use futures::{FutureExt, select};
 use rlimit::Resource;
 use serde::{Deserialize, Serialize};
 use tracing::info;
@@ -63,11 +62,16 @@ pub async fn run(config_file: Option<String>) -> anyhow::Result<()> {
 
   set_file_descriptor_limit(max_connections)?;
 
+  // Bootstrap the core dispatcher.
+  let mut core_dispatcher = narwhal_common::core_dispatcher::CoreDispatcher::new(num_workers());
+  core_dispatcher.bootstrap().await?;
+
   // Initialize the modulator.
   let mut modulator_service = narwhal_modulator::init_modulator(
     cfg.modulator.clone(),
     cfg.c2s_server.limits.max_message_size,
     cfg.c2s_server.limits.max_payload_size,
+    core_dispatcher.clone(),
   )
   .await?;
 
@@ -108,7 +112,8 @@ pub async fn run(config_file: Option<String>) -> anyhow::Result<()> {
 
   let c2s_conn_rt = c2s::conn::C2sConnRuntime::new(c2s_config.as_ref()).await;
 
-  let mut c2s_ln = c2s::C2sListener::new(c2s_config.listener.clone(), c2s_conn_rt, c2s_dispatcher_factory);
+  let mut c2s_ln =
+    c2s::C2sListener::new(c2s_config.listener.clone(), c2s_conn_rt, c2s_dispatcher_factory, core_dispatcher.clone());
 
   // Start routing task for modulator private payloads.
   let mut route_m2s_payload_handle = Option::<(monoio::task::JoinHandle<()>, async_channel::Sender<()>)>::None;
@@ -132,6 +137,8 @@ pub async fn run(config_file: Option<String>) -> anyhow::Result<()> {
     shutdown_tx.close();
     let _ = handle.await;
   }
+
+  core_dispatcher.shutdown().await?;
 
   info!("hasta la vista, baby");
 
@@ -167,6 +174,16 @@ pub fn setup_panic_hook() {
   }));
 }
 
+pub fn num_workers() -> usize {
+  const ENV_VAR: &str = "NARWHAL_NUM_WORKERS";
+  match std::env::var(ENV_VAR) {
+    Ok(val) => {
+      val.parse::<usize>().unwrap_or_else(|_| panic!("{} must be a valid positive integer, got: {}", ENV_VAR, val))
+    },
+    Err(_) => std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1),
+  }
+}
+
 fn load_config(config_file: Option<String>) -> anyhow::Result<Config> {
   let toml_file = config_file.unwrap_or("config.toml".to_string());
 
@@ -181,11 +198,19 @@ fn load_config(config_file: Option<String>) -> anyhow::Result<Config> {
 }
 
 async fn wait_for_stop_signal() -> anyhow::Result<()> {
-  let sig_term = monoio::utils::CtrlC::new().expect("failed to create SIGTERM handler");
+  let (tx, rx) = async_channel::bounded::<()>(1);
 
-  select! {
-    _ = sig_term.fuse() => Ok(()),
+  for sig in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+    let tx = tx.clone();
+    unsafe {
+      signal_hook::low_level::register(sig, move || {
+        let _ = tx.try_send(());
+      })?;
+    }
   }
+
+  let _ = rx.recv().await;
+  Ok(())
 }
 
 fn set_file_descriptor_limit(max_connections: u32) -> anyhow::Result<()> {
