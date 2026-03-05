@@ -23,6 +23,11 @@ use narwhal_protocol::{
 use narwhal_util::pool::PoolBuffer;
 use narwhal_util::string_atom::StringAtom;
 
+use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::registry::Registry;
+
 use crate::modulator::{
   AuthRequest, AuthResult, ForwardBroadcastPayloadRequest, ForwardBroadcastPayloadResult, ForwardEventRequest,
   Operation, OutboundPrivatePayload, ReceivePrivatePayloadRequest, SendPrivatePayloadRequest, SendPrivatePayloadResult,
@@ -37,25 +42,85 @@ pub type S2mConnRuntime = narwhal_common::conn::ConnRuntime<S2mService>;
 /// The M2S connection runtime.
 pub type M2sConnRuntime = narwhal_common::conn::ConnRuntime<M2sService>;
 
-#[derive(Clone)]
-pub struct M2sDispatcherFactory(Arc<RwLock<M2sDispatcherFactoryInner>>);
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct ResultLabel {
+  result: &'static str,
+}
 
-// ===== impl M2sDispatcherFactory =====
+#[derive(Clone)]
+struct M2sDispatcherMetrics {
+  connect_failures: Counter,
+  mod_direct: Counter,
+  mod_direct_dropped: Counter,
+}
+
+// === impl M2sDispatcherMetrics ===
+
+impl M2sDispatcherMetrics {
+  fn register(registry: &mut Registry) -> Self {
+    let connect_failures = Counter::default();
+    registry.register("connect_failures", "Connection handshake failures", connect_failures.clone());
+    let mod_direct = Counter::default();
+    registry.register("mod_direct", "M2sModDirect messages routed", mod_direct.clone());
+    let mod_direct_dropped = Counter::default();
+    registry.register("mod_direct_dropped", "M2sModDirect payloads dropped", mod_direct_dropped.clone());
+    Self { connect_failures, mod_direct, mod_direct_dropped }
+  }
+}
+
+#[derive(Clone)]
+struct S2mDispatcherMetrics {
+  connect_failures: Counter,
+  auth_attempts: Family<ResultLabel, Counter>,
+  forward_payload: Family<ResultLabel, Counter>,
+  forward_event: Counter,
+  mod_direct: Family<ResultLabel, Counter>,
+}
+
+// === impl S2mDispatcherMetrics ===
+
+impl S2mDispatcherMetrics {
+  fn register(registry: &mut Registry) -> Self {
+    let connect_failures = Counter::default();
+    registry.register("connect_failures", "Connection handshake failures", connect_failures.clone());
+    let auth_attempts = Family::<ResultLabel, Counter>::default();
+    registry.register("auth_attempts", "Authentication attempts", auth_attempts.clone());
+    let forward_payload = Family::<ResultLabel, Counter>::default();
+    registry.register("forward_payload", "Forward broadcast payload results", forward_payload.clone());
+    let forward_event = Counter::default();
+    registry.register("forward_event", "Forward event messages handled", forward_event.clone());
+    let mod_direct = Family::<ResultLabel, Counter>::default();
+    registry.register("mod_direct", "S2mModDirect messages handled", mod_direct.clone());
+    Self { connect_failures, auth_attempts, forward_payload, forward_event, mod_direct }
+  }
+}
+
+#[derive(Clone)]
+pub struct M2sDispatcherFactory {
+  inner: Arc<RwLock<M2sDispatcherFactoryInner>>,
+  metrics: M2sDispatcherMetrics,
+}
+
+// === impl M2sDispatcherFactory ===
 
 impl M2sDispatcherFactory {
-  pub fn new(config: Arc<M2sServerConfig>, payload_tx: async_broadcast::Sender<OutboundPrivatePayload>) -> Self {
+  pub fn new(
+    config: Arc<M2sServerConfig>,
+    payload_tx: async_broadcast::Sender<OutboundPrivatePayload>,
+    registry: &mut Registry,
+  ) -> Self {
     let inner = M2sDispatcherFactoryInner { config, payload_tx };
 
-    Self(Arc::new(RwLock::new(inner)))
+    Self { inner: Arc::new(RwLock::new(inner)), metrics: M2sDispatcherMetrics::register(registry) }
   }
 }
 
 #[async_trait::async_trait(?Send)]
 impl narwhal_common::conn::DispatcherFactory<M2sDispatcher> for M2sDispatcherFactory {
   async fn create(&mut self, handler: usize, tx: ConnTx) -> M2sDispatcher {
-    let inner = self.0.read().await;
+    let inner = self.inner.read().await;
 
-    M2sDispatcher::new(handler, inner.config.clone(), tx, inner.payload_tx.clone())
+    M2sDispatcher::new(handler, inner.config.clone(), tx, inner.payload_tx.clone(), self.metrics.clone())
   }
 
   async fn bootstrap(&mut self) -> anyhow::Result<()> {
@@ -88,6 +153,9 @@ pub struct M2sDispatcher {
 
   /// The broadcast sender for outbound private payloads.
   payload_tx: async_broadcast::Sender<OutboundPrivatePayload>,
+
+  /// Metric handles.
+  metrics: M2sDispatcherMetrics,
 }
 
 impl Debug for M2sDispatcher {
@@ -96,44 +164,22 @@ impl Debug for M2sDispatcher {
   }
 }
 
-// ===== impl M2sDispatcher =====
+// === impl M2sDispatcher ===
 
 impl M2sDispatcher {
-  /// Initializes the M2S dispatcher with the given parameters.
-  pub fn new(
+  fn new(
     handler: usize,
     config: Arc<M2sServerConfig>,
     tx: ConnTx,
     payload_tx: async_broadcast::Sender<OutboundPrivatePayload>,
+    metrics: M2sDispatcherMetrics,
   ) -> Self {
-    Self { handler, config, tx, payload_tx }
+    Self { handler, config, tx, payload_tx, metrics }
   }
 }
 
 #[async_trait::async_trait(?Send)]
 impl narwhal_common::conn::Dispatcher for M2sDispatcher {
-  /// Dispatches incoming messages based on the current connection state.
-  ///
-  /// This is the main entry point for message handling that:
-  /// * Routes connecting state messages to connection establishment
-  /// * Routes authenticated state messages to appropriate handlers
-  /// * Rejects messages in other states
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The message to dispatch
-  /// * `payload` - Optional payload buffer associated with the message
-  /// * `state` - Current connection state
-  ///
-  /// # Returns
-  ///
-  /// Returns `Ok(Some(new_state))` if a state transition should occur, or
-  /// `Ok(None)` if the state should remain unchanged.
-  ///
-  /// # Errors
-  ///
-  /// Returns an `UnexpectedMessage` error if the message cannot be handled
-  /// in the current state.
   async fn dispatch_message(
     &mut self,
     msg: Message,
@@ -167,6 +213,7 @@ impl M2sDispatcher {
     match msg {
       Message::M2sConnect(params) => {
         if params.protocol_version != 1 {
+          self.metrics.connect_failures.inc();
           return Err(narwhal_protocol::Error::new(UnsupportedProtocolVersion).into());
         }
         let config = self.config.clone();
@@ -176,6 +223,7 @@ impl M2sDispatcher {
           { if !config.shared_secret.is_empty() { Some(config.shared_secret.as_str().into()) } else { None } };
 
         if shared_secret.is_some() && params.secret != shared_secret {
+          self.metrics.connect_failures.inc();
           return Err(narwhal_protocol::Error::new(Unauthorized).into());
         }
 
@@ -207,25 +255,6 @@ impl M2sDispatcher {
     }
   }
 
-  /// Dispatches messages when the connection is in authenticated state.
-  ///
-  /// This method handles messages after the connection has been established and
-  /// authenticated. Currently, it only supports M2sModDirect messages which are
-  /// forwarded to the modulator for processing.
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The message to dispatch
-  /// * `payload` - Optional payload buffer associated with the message
-  ///
-  /// # Returns
-  ///
-  /// Returns `Ok(())` if the message was successfully dispatched.
-  ///
-  /// # Errors
-  ///
-  /// Returns an `UnexpectedMessage` error if the message type is not supported
-  /// in the authenticated state.
   async fn dispatch_message_in_authenticated_state(
     &mut self,
     msg: Message,
@@ -243,24 +272,6 @@ impl M2sDispatcher {
     }
   }
 
-  /// Handles M2sModDirect messages from the modulator for routing to clients.
-  ///
-  /// This method processes direct messages sent by the modulator that contain
-  /// payloads to be routed to specific client connections. The payload and its
-  /// target clients are broadcast through a channel for the server to deliver.
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The M2sModDirect message to process
-  /// * `payload` - The payload buffer containing the message data
-  ///
-  /// # Returns
-  ///
-  /// Returns `Ok(())` when the message is successfully processed and acknowledged.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error if the broadcast channel fails to send the payload.
   async fn dispatch_mod_direct_message(&mut self, msg: Message, payload: PoolBuffer) -> anyhow::Result<()> {
     assert!(matches!(msg, Message::M2sModDirect { .. }));
 
@@ -275,7 +286,11 @@ impl M2sDispatcher {
 
     // Send the payload through the broadcast channel
     // Ignore errors if there are no receivers
-    let _ = self.payload_tx.try_broadcast(outbound_payload);
+    if self.payload_tx.try_broadcast(outbound_payload).is_err() {
+      self.metrics.mod_direct_dropped.inc();
+    } else {
+      self.metrics.mod_direct.inc();
+    }
 
     // Send acknowledgment
     let ack_msg = Message::M2sModDirectAck(M2sModDirectAckParameters { id: params.id });
@@ -287,12 +302,9 @@ impl M2sDispatcher {
   }
 }
 
-pub struct S2mDispatcherFactory<M: Modulator>(Arc<RwLock<S2mDispatcherFactoryInner<M>>>);
-
-impl<M: Modulator> Clone for S2mDispatcherFactory<M> {
-  fn clone(&self) -> Self {
-    Self(self.0.clone())
-  }
+pub struct S2mDispatcherFactory<M: Modulator> {
+  inner: Arc<RwLock<S2mDispatcherFactoryInner<M>>>,
+  metrics: S2mDispatcherMetrics,
 }
 
 pub struct S2mDispatcherFactoryInner<M: Modulator> {
@@ -324,10 +336,16 @@ impl<M: Modulator> Debug for S2mDispatcherFactoryInner<M> {
   }
 }
 
-// ===== impl S2mDispatcherFactory =====
+// === impl S2mDispatcherFactory ===
+
+impl<M: Modulator> Clone for S2mDispatcherFactory<M> {
+  fn clone(&self) -> Self {
+    Self { inner: self.inner.clone(), metrics: self.metrics.clone() }
+  }
+}
 
 impl<M: Modulator> S2mDispatcherFactory<M> {
-  pub fn new(config: Arc<S2mServerConfig>, modulator: Arc<M>) -> Self {
+  pub fn new(config: Arc<S2mServerConfig>, modulator: Arc<M>, registry: &mut Registry) -> Self {
     let (shutdown_tx, shutdown_rx) = async_channel::bounded(1);
 
     let inner = S2mDispatcherFactoryInner {
@@ -339,7 +357,7 @@ impl<M: Modulator> S2mDispatcherFactory<M> {
       m2s_client: None,
     };
 
-    Self(Arc::new(RwLock::new(inner)))
+    Self { inner: Arc::new(RwLock::new(inner)), metrics: S2mDispatcherMetrics::register(registry) }
   }
 
   async fn payload_reader_loop(
@@ -376,13 +394,13 @@ impl<M: Modulator> S2mDispatcherFactory<M> {
 #[async_trait::async_trait(?Send)]
 impl<M: Modulator> narwhal_common::conn::DispatcherFactory<S2mDispatcher<M>> for S2mDispatcherFactory<M> {
   async fn create(&mut self, handler: usize, tx: ConnTx) -> S2mDispatcher<M> {
-    let inner = self.0.read().await;
+    let inner = self.inner.read().await;
 
-    S2mDispatcher::new(handler, inner.config.clone(), inner.modulator.clone(), tx)
+    S2mDispatcher::new(handler, inner.config.clone(), inner.modulator.clone(), tx, self.metrics.clone())
   }
 
   async fn bootstrap(&mut self) -> anyhow::Result<()> {
-    let mut inner = self.0.write().await;
+    let mut inner = self.inner.write().await;
 
     assert!(!inner.shutdown_tx.is_closed());
 
@@ -403,7 +421,7 @@ impl<M: Modulator> narwhal_common::conn::DispatcherFactory<S2mDispatcher<M>> for
   }
 
   async fn shutdown(&mut self) -> anyhow::Result<()> {
-    let mut inner = self.0.write().await;
+    let mut inner = self.inner.write().await;
 
     inner.shutdown_tx.close();
 
@@ -431,6 +449,9 @@ pub struct S2mDispatcher<M: Modulator> {
 
   /// The connection transmitter.
   tx: ConnTx,
+
+  /// Metric handles.
+  metrics: S2mDispatcherMetrics,
 }
 
 impl<M: Modulator> Debug for S2mDispatcher<M> {
@@ -440,36 +461,19 @@ impl<M: Modulator> Debug for S2mDispatcher<M> {
 }
 
 impl<M: Modulator> S2mDispatcher<M> {
-  /// Initializes the dispatcher with the given parameters.
-  pub fn new(handler: usize, config: Arc<S2mServerConfig>, modulator: Arc<M>, tx: ConnTx) -> Self {
-    S2mDispatcher { handler, config, modulator, tx }
+  fn new(
+    handler: usize,
+    config: Arc<S2mServerConfig>,
+    modulator: Arc<M>,
+    tx: ConnTx,
+    metrics: S2mDispatcherMetrics,
+  ) -> Self {
+    S2mDispatcher { handler, config, modulator, tx, metrics }
   }
 }
 
 #[async_trait::async_trait(?Send)]
 impl<M: Modulator> narwhal_common::conn::Dispatcher for S2mDispatcher<M> {
-  /// Dispatches incoming messages based on the current connection state.
-  ///
-  /// This is the main entry point for message handling that:
-  /// * Routes connecting state messages to connection establishment
-  /// * Routes authenticated state messages to appropriate handlers
-  /// * Rejects messages in other states
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The message to dispatch
-  /// * `payload` - Optional payload buffer associated with the message
-  /// * `state` - Current connection state
-  ///
-  /// # Returns
-  ///
-  /// Returns `Ok(Some(new_state))` if a state transition should occur, or
-  /// `Ok(None)` if the state should remain unchanged.
-  ///
-  /// # Errors
-  ///
-  /// Returns an `UnexpectedMessage` error if the message cannot be handled
-  /// in the current state.
   async fn dispatch_message(
     &mut self,
     msg: Message,
@@ -499,34 +503,11 @@ impl<M: Modulator> narwhal_common::conn::Dispatcher for S2mDispatcher<M> {
 }
 
 impl<M: Modulator> S2mDispatcher<M> {
-  /// Handles the initial connection handshake with a modulator client.
-  ///
-  /// This method processes the S2M connect message by:
-  /// * Validating the protocol version
-  /// * Negotiating the heartbeat interval based on client preferences and server limits
-  /// * Sending a connection acknowledgment with:
-  ///   - The modulator's protocol name (if any)
-  ///   - Supported operations
-  ///   - Negotiated heartbeat interval
-  ///   - Server configuration limits
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The message to process. Must be a `Message::S2mConnect` variant.
-  ///
-  /// # Returns
-  ///
-  /// Returns the negotiated heartbeat interval as a `Duration` if the connection is accepted.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error in the following cases:
-  /// * If the protocol version is not supported
-  /// * If the message is not a connect message
   async fn dispatch_message_in_connecting_state(&mut self, msg: Message) -> anyhow::Result<Duration> {
     match msg {
       Message::S2mConnect(params) => {
         if params.protocol_version != 1 {
+          self.metrics.connect_failures.inc();
           return Err(narwhal_protocol::Error::new(UnsupportedProtocolVersion).into());
         }
         let config = self.config.server.clone();
@@ -536,6 +517,7 @@ impl<M: Modulator> S2mDispatcher<M> {
           { if !config.shared_secret.is_empty() { Some(config.shared_secret.as_str().into()) } else { None } };
 
         if shared_secret.is_some() && params.secret != shared_secret {
+          self.metrics.connect_failures.inc();
           return Err(narwhal_protocol::Error::new(Unauthorized).into());
         }
 
@@ -569,20 +551,6 @@ impl<M: Modulator> S2mDispatcher<M> {
     }
   }
 
-  /// Routes messages received in the authenticated state to their appropriate handlers.
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The message to dispatch
-  /// * `payload` - Optional payload buffer associated with the message
-  ///
-  /// # Returns
-  ///
-  /// Returns `Ok(())` if the message was successfully handled by one of the specialized handlers.
-  ///
-  /// # Errors
-  ///
-  /// Returns an `UnexpectedMessage` error if the message type is not supported in the authenticated state.
   async fn dispatch_message_in_authenticated_state(
     &mut self,
     msg: Message,
@@ -599,22 +567,6 @@ impl<M: Modulator> S2mDispatcher<M> {
     }
   }
 
-  /// Handles an authentication message by delegating to the configured modulator.
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The authentication message to process. Must be a `Message::S2mAuth` variant.
-  ///
-  /// # Returns
-  ///
-  /// Returns `Ok(())` if the authentication message was handled successfully,
-  /// regardless of whether the authentication itself succeeded or failed.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error in the following cases:
-  /// * If the modulator doesn't support authentication operation
-  /// * If the modulator's authenticate call fails
   async fn dispatch_auth_message(&mut self, msg: Message) -> anyhow::Result<()> {
     assert!(matches!(msg, Message::S2mAuth { .. }));
 
@@ -634,12 +586,15 @@ impl<M: Modulator> S2mDispatcher<M> {
 
     let reply_msg = match auth_res.result {
       AuthResult::Success { username } => {
+        self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "success" }).inc();
         Message::S2mAuthAck(S2mAuthAckParameters { id, challenge: None, username: Some(username), succeeded: true })
       },
       AuthResult::Continue { challenge } => {
+        self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "challenge" }).inc();
         Message::S2mAuthAck(S2mAuthAckParameters { id, challenge: Some(challenge), username: None, succeeded: false })
       },
       AuthResult::Failure => {
+        self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "failure" }).inc();
         Message::S2mAuthAck(S2mAuthAckParameters { id, challenge: None, username: None, succeeded: false })
       },
     };
@@ -652,17 +607,6 @@ impl<M: Modulator> S2mDispatcher<M> {
     Ok(())
   }
 
-  /// Handles a direct modulator message by delegating to the configured modulator.
-  ///
-  /// This method processes `S2mModDirect` messages that enable direct communication
-  /// between clients and the modulator. The payload is passed directly to the
-  /// modulator's `client_direct` method for custom processing.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error in the following cases:
-  /// * If the modulator doesn't support the `ClientDirect` operation
-  /// * If the modulator's `client_direct` call fails
   async fn dispatch_mod_direct_message(&mut self, msg: Message, payload: PoolBuffer) -> anyhow::Result<()> {
     assert!(matches!(msg, Message::S2mModDirect { .. }));
 
@@ -682,6 +626,13 @@ impl<M: Modulator> S2mDispatcher<M> {
 
     // Send the reply message.
     let valid = matches!(response.result, SendPrivatePayloadResult::Valid);
+
+    if valid {
+      self.metrics.mod_direct.get_or_create(&ResultLabel { result: "valid" }).inc();
+    } else {
+      self.metrics.mod_direct.get_or_create(&ResultLabel { result: "invalid" }).inc();
+    }
+
     self.tx.send_message(Message::S2mModDirectAck(S2mModDirectAckParameters { id: params.id, valid }));
 
     trace!(handler = self.handler, id = params.id, "handled ModDirect message");
@@ -689,23 +640,6 @@ impl<M: Modulator> S2mDispatcher<M> {
     Ok(())
   }
 
-  /// Handles a payload forward message by delegating to the configured modulator.
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The forwarding message to process. Must be a `Message::ForwardPayload` variant.
-  /// * `payload` - The payload buffer to be forwarded/validated.
-  ///
-  /// # Returns
-  ///
-  /// Returns `Ok(())` if the validation was performed and the response was sent,
-  /// regardless of whether the payload was valid or not.
-  ///
-  /// # Errors
-  ///
-  /// Returns an error in the following cases:
-  /// * If the modulator doesn't support payload forwarding operation
-  /// * If the modulator's forward_payload call fails
   async fn dispatch_forward_message_payload_message(
     &mut self,
     msg: Message,
@@ -737,6 +671,7 @@ impl<M: Modulator> S2mDispatcher<M> {
     // Send the reply message and log the result.
     match forward_resp.result {
       ForwardBroadcastPayloadResult::Valid => {
+        self.metrics.forward_payload.get_or_create(&ResultLabel { result: "valid" }).inc();
         self.tx.send_message(Message::S2mForwardBroadcastPayloadAck(S2mForwardBroadcastPayloadAckParameters {
           id: params.id,
           valid: true,
@@ -753,6 +688,7 @@ impl<M: Modulator> S2mDispatcher<M> {
         );
       },
       ForwardBroadcastPayloadResult::ValidWithAlteration { altered_payload } => {
+        self.metrics.forward_payload.get_or_create(&ResultLabel { result: "valid_altered" }).inc();
         let length = altered_payload.len() as u32;
         self.tx.send_message_with_payload(
           Message::S2mForwardBroadcastPayloadAck(S2mForwardBroadcastPayloadAckParameters {
@@ -773,6 +709,7 @@ impl<M: Modulator> S2mDispatcher<M> {
         );
       },
       ForwardBroadcastPayloadResult::Invalid => {
+        self.metrics.forward_payload.get_or_create(&ResultLabel { result: "invalid" }).inc();
         self.tx.send_message(Message::S2mForwardBroadcastPayloadAck(S2mForwardBroadcastPayloadAckParameters {
           id: params.id,
           valid: false,
@@ -793,20 +730,6 @@ impl<M: Modulator> S2mDispatcher<M> {
     Ok(())
   }
 
-  /// Handles an incoming `ForwardEvent` message by forwarding the event to the modulator.
-  ///
-  /// This method checks if the modulator supports the `ForwardEvent` operation. If supported,
-  /// it extracts the event parameters from the message and calls the modulator's
-  /// `forward_event` method with the constructed [`Event`]. Logs the handling of the event
-  /// and returns an error if the operation is not supported or if forwarding fails.
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The [`Message`] containing the `ModForwardEvent` parameters to process.
-  ///
-  /// # Returns
-  ///
-  /// An [`anyhow::Result`] indicating success or failure of the event forwarding operation.
   async fn dispatch_forward_event_message(&mut self, msg: Message) -> anyhow::Result<()> {
     assert!(matches!(msg, Message::S2mForwardEvent { .. }));
 
@@ -828,6 +751,8 @@ impl<M: Modulator> S2mDispatcher<M> {
 
     let event = Event { kind, channel: params.channel, nid: params.nid, owner: params.owner };
     self.modulator.forward_event(ForwardEventRequest { event }).await?;
+
+    self.metrics.forward_event.inc();
 
     self.tx.send_message(Message::S2mForwardEventAck(S2mForwardEventAckParameters { id: params.id }));
 

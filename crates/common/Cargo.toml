@@ -16,5 +16,6 @@ tokio-util = { version = "0.7.18", features = ["rt", "codec"] }
 tracing = "0.1.44"
 rand = "0.10.0"
 slab = "0.4.12"
+prometheus-client = "0.24"
 narwhal-protocol = { path = "../protocol" }
 narwhal-util = { path = "../util" }

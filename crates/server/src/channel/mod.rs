@@ -23,6 +23,12 @@ use narwhal_protocol::{Event, EventKind};
 use narwhal_util::pool::PoolBuffer;
 use narwhal_util::string_atom::StringAtom;
 
+use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::registry::Registry;
+
 use crate::notifier::Notifier;
 use crate::router::GlobalRouter;
 use crate::transmitter::{Resource, Transmitter};
@@ -32,6 +38,40 @@ const DASH_MAP_SHARD_COUNT: usize = 1024;
 const MAX_CHANNELS_PAGE_SIZE: u32 = 50;
 
 const MAX_MEMBERS_PAGE_SIZE: u32 = 100;
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct ResultLabel {
+  result: &'static str,
+}
+
+/// Metric handles for `ChannelManager`.
+#[derive(Clone)]
+struct ChannelManagerMetrics {
+  channels_active: Gauge,
+  channel_joins: Family<ResultLabel, Counter>,
+  channel_leaves: Counter,
+  channels_deleted: Counter,
+}
+
+impl std::fmt::Debug for ChannelManagerMetrics {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ChannelManagerMetrics").finish_non_exhaustive()
+  }
+}
+
+impl ChannelManagerMetrics {
+  fn register(registry: &mut Registry) -> Self {
+    let channels_active = Gauge::default();
+    registry.register("channels_active", "Number of currently active channels", channels_active.clone());
+    let channel_joins = Family::default();
+    registry.register("channel_joins", "Channel join results", channel_joins.clone());
+    let channel_leaves = Counter::default();
+    registry.register("channel_leaves", "Total channel leave operations", channel_leaves.clone());
+    let channels_deleted = Counter::default();
+    registry.register("channels_deleted", "Total channels deleted", channels_deleted.clone());
+    Self { channels_active, channel_joins, channel_leaves, channels_deleted }
+  }
+}
 
 /// The channel manager inner state.
 #[derive(Debug)]
@@ -56,6 +96,9 @@ struct ChannelManagerInner {
 
   /// The maximum payload size allowed.
   max_payload_size: u32,
+
+  /// Metric handles.
+  metrics: ChannelManagerMetrics,
 }
 
 /// The channel manager.
@@ -85,6 +128,7 @@ impl ChannelManager {
     max_clients_per_channel: u32,
     max_channels_per_client: u32,
     max_payload_size: u32,
+    registry: &mut Registry,
   ) -> Self {
     let channels_map = DashMap::with_capacity_and_shard_amount(max_channels as usize, DASH_MAP_SHARD_COUNT);
     let in_channels = DashMap::with_shard_amount(DASH_MAP_SHARD_COUNT);
@@ -97,6 +141,7 @@ impl ChannelManager {
       max_clients_per_channel,
       max_channels_per_client,
       max_payload_size,
+      metrics: ChannelManagerMetrics::register(registry),
     };
 
     Self(Arc::new(RwLock::new(inner)))
@@ -297,11 +342,13 @@ impl ChannelManager {
     let max_channels_per_client = mng_guard.max_channels_per_client;
     let max_clients_per_channel = mng_guard.max_clients_per_channel;
     let max_payload_size = mng_guard.max_payload_size;
+    let metrics = mng_guard.metrics.clone();
 
     drop(mng_guard);
 
     // Ensure the channel is local.
     if channel_id.domain != router.c2s_router().local_domain() {
+      metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
       return Err(narwhal_protocol::Error::new(NotImplemented).with_id(correlation_id).into());
     }
     let handler = channel_id.handler.clone();
@@ -334,6 +381,7 @@ impl ChannelManager {
     // Check if the channel was removed while we were waiting for the lock.
     // This can happen if the last member left, triggering channel removal.
     if !channels.contains_key(&handler) {
+      metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
       return Err(
         narwhal_protocol::Error::new(ResourceConflict)
           .with_id(correlation_id)
@@ -364,6 +412,7 @@ impl ChannelManager {
     let acl = &channel_inner.acl;
 
     if !acl.is_join_allowed(&new_member_nid) {
+      metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
       return Err(narwhal_protocol::Error::new(NotAllowed).with_id(correlation_id).into());
     }
 
@@ -372,14 +421,17 @@ impl ChannelManager {
     let config = &channel_inner.config;
 
     if channel_inner.is_member(&new_member_nid) {
+      metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
       return Err(narwhal_protocol::Error::new(UserInChannel).with_id(correlation_id).into());
     } else if channel_inner.member_count() >= config.max_clients as usize {
+      metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
       return Err(narwhal_protocol::Error::new(ChannelIsFull).with_id(correlation_id).into());
     }
     // Check if the maximum number of subscriptions is reached.
     if let Some(in_channels) = in_channels.get(&new_member_nid.username)
       && in_channels.len() >= max_channels_per_client as usize
     {
+      metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
       return Err(
         narwhal_protocol::Error::new(PolicyViolation)
           .with_id(correlation_id)
@@ -408,6 +460,11 @@ impl ChannelManager {
       id: correlation_id,
       channel: channel_id.into(),
     }));
+
+    metrics.channel_joins.get_or_create(&ResultLabel { result: "success" }).inc();
+    if as_owner {
+      metrics.channels_active.inc();
+    }
 
     Ok(as_owner)
   }
@@ -438,6 +495,7 @@ impl ChannelManager {
     let router = mng_guard.router.clone();
     let channels = mng_guard.channels.clone();
     let in_channels = mng_guard.in_channels.clone();
+    let metrics = mng_guard.metrics.clone();
 
     // Ensure the channel is local.
     if channel_id.domain != router.c2s_router().local_domain() {
@@ -499,9 +557,12 @@ impl ChannelManager {
       transmitter.send_message(Message::LeaveChannelAck(LeaveChannelAckParameters { id: correlation_id }));
     }
 
+    metrics.channel_leaves.inc();
+
     // If the channel is now empty, release it.
     if channel_inner.is_empty() {
       channels.remove(&channel_inner.handler);
+      metrics.channels_active.dec();
 
       return Ok(());
     }
@@ -567,6 +628,7 @@ impl ChannelManager {
     let router = mng_guard.router.clone();
     let channels = mng_guard.channels.clone();
     let in_channels = mng_guard.in_channels.clone();
+    let metrics = mng_guard.metrics.clone();
     drop(mng_guard);
 
     // Ensure the channel is local.
@@ -618,6 +680,9 @@ impl ChannelManager {
 
     // Send the ack to the owner.
     transmitter.send_message(Message::DeleteChannelAck(DeleteChannelAckParameters { id: correlation_id }));
+
+    metrics.channels_deleted.inc();
+    metrics.channels_active.dec();
 
     Ok(())
   }

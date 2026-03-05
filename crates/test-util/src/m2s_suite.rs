@@ -8,6 +8,7 @@ use monoio::net::TcpStream;
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::{M2sListener, OutboundPrivatePayload};
 use narwhal_protocol::{M2sConnectParameters, Message};
+use prometheus_client::registry::Registry;
 
 use crate::TestConn;
 
@@ -41,16 +42,25 @@ impl M2sSuite {
     // Create the broadcast channel for outbound payloads
     let (payload_tx, payload_rx) = async_broadcast::broadcast(1024);
 
-    let dispatcher_factory = narwhal_modulator::conn::M2sDispatcherFactory::new(arc_config.clone(), payload_tx.clone());
+    let mut registry = Registry::default();
+
+    let dispatcher_factory =
+      narwhal_modulator::conn::M2sDispatcherFactory::new(arc_config.clone(), payload_tx.clone(), &mut registry);
 
     let server_config = (*arc_config).clone();
 
-    let conn_rt = narwhal_modulator::conn::M2sConnRuntime::new(&server_config).await;
+    let conn_rt = narwhal_modulator::conn::M2sConnRuntime::new(&server_config, &mut registry).await;
 
     let mut core_dispatcher = CoreDispatcher::new(1);
     core_dispatcher.bootstrap().await.expect("core dispatcher bootstrap failed");
 
-    let ln = M2sListener::new(server_config.listener.clone(), conn_rt, dispatcher_factory, core_dispatcher.clone());
+    let ln = M2sListener::new(
+      server_config.listener.clone(),
+      conn_rt,
+      dispatcher_factory,
+      core_dispatcher.clone(),
+      &mut registry,
+    );
 
     Self { config: arc_config, ln, core_dispatcher, payload_tx, payload_rx: Some(payload_rx) }
   }

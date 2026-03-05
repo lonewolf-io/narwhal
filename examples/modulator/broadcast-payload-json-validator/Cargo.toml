@@ -18,6 +18,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_derive = "1.0"
 serde_json = "1.0.140"
 toml = "0.9.8"
+prometheus-client = "0.24"
 narwhal-modulator = { path = "../../../crates/modulator" }
 narwhal-common = { path = "../../../crates/common" }
 narwhal-protocol = { path = "../../../crates/protocol" }

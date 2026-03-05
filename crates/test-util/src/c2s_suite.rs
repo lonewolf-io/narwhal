@@ -23,6 +23,7 @@ use narwhal_server::channel::ChannelManager;
 use narwhal_server::notifier::Notifier;
 use narwhal_server::router::GlobalRouter;
 use narwhal_util::string_atom::StringAtom;
+use prometheus_client::registry::Registry;
 
 use crate::TestConn;
 
@@ -84,6 +85,8 @@ impl C2sSuite {
     let max_channels_per_client = arc_config.limits.max_channels_per_client;
     let max_payload_size = arc_config.limits.max_payload_size;
 
+    let mut registry = Registry::default();
+
     let channel_mng = ChannelManager::new(
       global_router,
       notifier,
@@ -91,6 +94,7 @@ impl C2sSuite {
       max_clients_per_channel,
       max_channels_per_client,
       max_payload_size,
+      &mut registry,
     );
 
     let conn_cfg = narwhal_common::conn::Config {
@@ -107,11 +111,16 @@ impl C2sSuite {
       rate_limit: arc_config.limits.rate_limit,
     };
 
-    let conn_rt = c2s::conn::C2sConnRuntime::new(conn_cfg).await;
+    let conn_rt = c2s::conn::C2sConnRuntime::new(conn_cfg, &mut registry).await;
 
-    let dispatcher_factory =
-      c2s::conn::C2sDispatcherFactory::new(arc_config.clone(), channel_mng.clone(), c2s_router.clone(), modulator)
-        .await?;
+    let dispatcher_factory = c2s::conn::C2sDispatcherFactory::new(
+      arc_config.clone(),
+      channel_mng.clone(),
+      c2s_router.clone(),
+      modulator,
+      &mut registry,
+    )
+    .await?;
 
     let mut runtime_dispatcher = CoreDispatcher::new(narwhal_server::num_workers());
     runtime_dispatcher.bootstrap().await?;
@@ -121,6 +130,7 @@ impl C2sSuite {
       conn_rt.clone(),
       dispatcher_factory,
       runtime_dispatcher.clone(),
+      &mut registry,
     );
 
     Ok(Self {

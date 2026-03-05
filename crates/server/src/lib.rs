@@ -17,6 +17,7 @@ use std::sync::Arc;
 use crate::channel::ChannelManager;
 use crate::notifier::Notifier;
 use crate::router::GlobalRouter;
+use crate::telemetry::MetricsRegistry;
 use crate::version::{GIT_BRANCH_NAME, GIT_COMMIT_HASH, VERSION};
 
 use rlimit::Resource;
@@ -41,45 +42,56 @@ struct Config {
 ///
 /// This is the main entry point for the narwhal server.
 ///
-/// # Arguments
-///
-///
 /// # Returns
 ///
 /// Returns `Ok(())` on successful shutdown, or an error if any step fails during
 /// startup or shutdown.
 pub async fn run(config_file: Option<String>) -> anyhow::Result<()> {
   // Parse the configuration file.
-  let mut cfg = load_config(config_file)?;
+  let cfg = load_config(config_file)?;
 
-  // Initialize the telemetry subscriber.
-  telemetry::init(cfg.telemetry)?;
+  // Initialize telemetry.
+  let registry = telemetry::init(&cfg.telemetry)?;
 
   info!(version = VERSION, branch = GIT_BRANCH_NAME, commit = GIT_COMMIT_HASH, "narwhal server is starting...");
 
   // Set file descriptor limit based on configuration.
-  let max_connections = cfg.c2s_server.limits.max_connections;
+  set_file_descriptor_limit(cfg.c2s_server.limits.max_connections)?;
 
-  set_file_descriptor_limit(max_connections)?;
+  // Run the server.
+  run_server(cfg.c2s_server, cfg.modulator, registry).await
+}
 
+async fn run_server(
+  c2s_server_config: c2s::Config,
+  modulator_config: narwhal_modulator::Config,
+  registry: MetricsRegistry,
+) -> anyhow::Result<()> {
   // Bootstrap the core dispatcher.
   let mut core_dispatcher = narwhal_common::core_dispatcher::CoreDispatcher::new(num_workers());
   core_dispatcher.bootstrap().await?;
 
-  // Initialize the modulator.
+  // Lock the registry for the entire metric-registration phase.
+  let mut guard = registry.lock().unwrap();
+
+  // Initialize the modulator, passing the m2s-prefixed registry.
+  let m2s_reg = guard.sub_registry_with_prefix("narwhal_m2s");
+
   let mut modulator_service = narwhal_modulator::init_modulator(
-    cfg.modulator.clone(),
-    cfg.c2s_server.limits.max_message_size,
-    cfg.c2s_server.limits.max_payload_size,
+    modulator_config,
+    c2s_server_config.limits.max_message_size,
+    c2s_server_config.limits.max_payload_size,
     core_dispatcher.clone(),
+    m2s_reg,
   )
   .await?;
 
   // Adjust message and payload limits based on the modulator's capabilities.
-  cfg.c2s_server.limits.max_message_size = modulator_service.adjusted_max_message_size;
-  cfg.c2s_server.limits.max_payload_size = modulator_service.adjusted_max_payload_size;
+  let mut c2s_server_config = c2s_server_config;
+  c2s_server_config.limits.max_message_size = modulator_service.adjusted_max_message_size;
+  c2s_server_config.limits.max_payload_size = modulator_service.adjusted_max_payload_size;
 
-  let c2s_config = Arc::new(cfg.c2s_server);
+  let c2s_config = Arc::new(c2s_server_config);
 
   let max_channels = c2s_config.limits.max_channels;
   let max_clients_per_channel = c2s_config.limits.max_clients_per_channel;
@@ -93,6 +105,8 @@ pub async fn run(config_file: Option<String>) -> anyhow::Result<()> {
 
   let notifier = Notifier::new(global_router.clone(), modulator_service.modulator.clone());
 
+  let channel_reg = guard.sub_registry_with_prefix("narwhal");
+
   let channel_mng = ChannelManager::new(
     global_router.clone(),
     notifier.clone(),
@@ -100,20 +114,32 @@ pub async fn run(config_file: Option<String>) -> anyhow::Result<()> {
     max_clients_per_channel,
     max_channels_per_client,
     max_payload_size,
+    channel_reg,
   );
+
+  let c2s_reg = guard.sub_registry_with_prefix("narwhal_c2s");
 
   let c2s_dispatcher_factory = c2s::conn::C2sDispatcherFactory::new(
     c2s_config.clone(),
     channel_mng.clone(),
     c2s_router.clone(),
     modulator_service.modulator.clone(),
+    c2s_reg,
   )
   .await?;
 
-  let c2s_conn_rt = c2s::conn::C2sConnRuntime::new(c2s_config.as_ref()).await;
+  let c2s_conn_rt = c2s::conn::C2sConnRuntime::new(c2s_config.as_ref(), c2s_reg).await;
 
-  let mut c2s_ln =
-    c2s::C2sListener::new(c2s_config.listener.clone(), c2s_conn_rt, c2s_dispatcher_factory, core_dispatcher.clone());
+  let mut c2s_ln = c2s::C2sListener::new(
+    c2s_config.listener.clone(),
+    c2s_conn_rt,
+    c2s_dispatcher_factory,
+    core_dispatcher.clone(),
+    c2s_reg,
+  );
+
+  // Release the registry lock.
+  drop(guard);
 
   // Start routing task for modulator private payloads.
   let mut route_m2s_payload_handle = Option::<(monoio::task::JoinHandle<()>, async_channel::Sender<()>)>::None;

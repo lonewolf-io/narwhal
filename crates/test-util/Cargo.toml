@@ -16,6 +16,7 @@ narwhal-client = { path = "../client" }
 narwhal-common = { path = "../common" }
 narwhal-modulator = { path = "../modulator" }
 narwhal-protocol = { path = "../protocol" }
+prometheus-client = "0.24"
 narwhal-server = { path = "../server" }
 narwhal-util = { path = "../util" }
 pki-types = { package = "rustls-pki-types", version = "1" }

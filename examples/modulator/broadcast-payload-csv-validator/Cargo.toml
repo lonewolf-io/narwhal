@@ -15,6 +15,7 @@ toml = "0.9.8"
 async-channel = "2"
 monoio = { version = "0.2.4", features = ["signal"] }
 signal-hook = "0.3"
+prometheus-client = "0.24"
 narwhal-modulator = { path = "../../../crates/modulator" }
 narwhal-common = { path = "../../../crates/common" }
 narwhal-protocol = { path = "../../../crates/protocol" }

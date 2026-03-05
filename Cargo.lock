@@ -491,6 +491,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dtoa"
+version = "1.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
+
+[[package]]
 name = "dunce"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1070,6 +1076,7 @@ dependencies = [
  "monoio",
  "narwhal-protocol",
  "narwhal-util",
+ "prometheus-client",
  "rand",
  "slab",
  "tokio-util",
@@ -1094,6 +1101,7 @@ dependencies = [
  "narwhal-test-util",
  "narwhal-util",
  "parking_lot",
+ "prometheus-client",
  "serde",
  "socket2 0.6.2",
  "tracing",
@@ -1144,6 +1152,7 @@ dependencies = [
  "narwhal-test-util",
  "narwhal-util",
  "parking_lot",
+ "prometheus-client",
  "rcgen",
  "rlimit",
  "rustls",
@@ -1173,6 +1182,7 @@ dependencies = [
  "narwhal-protocol",
  "narwhal-server",
  "narwhal-util",
+ "prometheus-client",
  "rustls",
  "rustls-pki-types",
  "webpki-roots",
@@ -1417,6 +1427,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
  "unicode-ident",
+]
+
+[[package]]
+name = "prometheus-client"
+version = "0.24.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4500adecd7af8e0e9f4dbce15cfee07ce913fbf6ad605cc468b83f2d531ee94"
+dependencies = [
+ "dtoa",
+ "itoa",
+ "parking_lot",
+ "prometheus-client-derive-encode",
+]
+
+[[package]]
+name = "prometheus-client-derive-encode"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9adf1691c04c0a5ff46ff8f262b58beb07b0dbb61f96f9f54f6cbd82106ed87f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

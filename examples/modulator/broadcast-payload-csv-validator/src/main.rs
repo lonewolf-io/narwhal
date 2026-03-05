@@ -22,6 +22,7 @@ use narwhal_modulator::modulator::{
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::{create_s2m_listener, Modulator};
 use narwhal_util::string_atom::StringAtom;
+use prometheus_client::registry::Registry;
 
 const MODULATOR_PROTOCOL_NAME: &str = "broadcast-payload-csv-validator/1.0";
 
@@ -157,7 +158,7 @@ where
   let mut core_dispatcher = CoreDispatcher::new(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1));
   core_dispatcher.bootstrap().await?;
 
-  let mut ln = create_s2m_listener(config, modulator, core_dispatcher.clone()).await?;
+  let mut ln = create_s2m_listener(config, modulator, core_dispatcher.clone(), &mut Registry::default()).await?;
 
   info!(protocol_name = protocol_name.as_ref(), "📡 starting s2m server...");
 

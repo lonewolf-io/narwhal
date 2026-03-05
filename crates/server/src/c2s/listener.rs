@@ -8,6 +8,10 @@ use async_channel::{Sender, bounded};
 use futures::{FutureExt, select};
 use monoio::net::TcpListener;
 use monoio_rustls::TlsAcceptor;
+use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::registry::Registry;
 use rustls::ServerConfig;
 use tracing::{info, trace, warn};
 
@@ -21,6 +25,27 @@ use crate::util::tls::{create_tls_config, generate_self_signed_cert};
 use narwhal_common::core_dispatcher::CoreDispatcher;
 
 const LOCALHOST_DOMAIN: &str = "localhost";
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct ResultLabel {
+  result: &'static str,
+}
+
+#[derive(Clone)]
+struct Metrics {
+  connections_accepted: Counter,
+  tls_handshakes: Family<ResultLabel, Counter>,
+}
+
+impl Metrics {
+  fn register(registry: &mut Registry) -> Self {
+    let connections_accepted = Counter::default();
+    registry.register("connections_accepted", "TCP connections accepted", connections_accepted.clone());
+    let tls_handshakes = Family::<ResultLabel, Counter>::default();
+    registry.register("tls_handshakes", "TLS handshake results", tls_handshakes.clone());
+    Self { connections_accepted, tls_handshakes }
+  }
+}
 
 /// A TLS-enabled TCP listener for client-to-server (C2S) connections.
 ///
@@ -45,6 +70,9 @@ pub struct C2sListener {
 
   /// Shutdown senders for each accept loop — one per shard.
   shutdown_txs: Vec<Sender<()>>,
+
+  /// Listener metrics.
+  metrics: Metrics,
 }
 
 // === impl C2sListener ===
@@ -58,6 +86,7 @@ impl C2sListener {
   /// * `conn_rt` - The connection runtime that will handle established connections
   /// * `dispatcher_factory` - The dispatcher factory that will create new dispatchers
   /// * `core_dispatcher` - The core dispatcher for spawning accept loops on per-core runtimes
+  /// * `registry` - The metrics registry used to register listener-level metrics
   ///
   /// # Returns
   ///
@@ -67,8 +96,19 @@ impl C2sListener {
     conn_rt: C2sConnRuntime,
     dispatcher_factory: C2sDispatcherFactory,
     core_dispatcher: CoreDispatcher,
+    registry: &mut Registry,
   ) -> Self {
-    Self { config, conn_rt, dispatcher_factory, core_dispatcher, local_address: None, shutdown_txs: Vec::new() }
+    let metrics = Metrics::register(registry);
+
+    Self {
+      config,
+      conn_rt,
+      dispatcher_factory,
+      core_dispatcher,
+      local_address: None,
+      shutdown_txs: Vec::new(),
+      metrics,
+    }
   }
 
   /// Bootstraps the listener, starting to accept incoming connections.
@@ -126,6 +166,7 @@ impl C2sListener {
       let conn_rt = self.conn_rt.clone();
       let dispatcher_factory = self.dispatcher_factory.clone();
       let worker_listener = if worker_id == 0 { pre_created_listener.take() } else { None };
+      let metrics = self.metrics.clone();
 
       self
         .core_dispatcher
@@ -139,6 +180,7 @@ impl C2sListener {
             dispatcher_factory,
             ready_tx,
             shutdown_rx,
+            metrics,
           )
         })
         .await?;
@@ -238,6 +280,7 @@ async fn run_accept_loop(
   dispatcher_factory: C2sDispatcherFactory,
   ready_tx: async_channel::Sender<()>,
   shutdown_rx: async_channel::Receiver<()>,
+  metrics: Metrics,
 ) {
   let listener = if let Some(std_listener) = pre_created_listener {
     match TcpListener::from_std(std_listener) {
@@ -270,18 +313,23 @@ async fn run_accept_loop(
           std::result::Result::Ok((tcp_stream, remote_addr)) => {
             trace!(worker_id, %remote_addr, service_type = C2sService::NAME, "accepted connection");
 
+            metrics.connections_accepted.inc();
+
             let acceptor = acceptor.clone();
             let conn_rt = conn_rt.clone();
             let dispatcher_factory = dispatcher_factory.clone();
+            let metrics = metrics.clone();
 
             monoio::spawn(async move {
               match acceptor.accept(tcp_stream).await {
                 std::result::Result::Ok(tls_stream) => {
                   trace!(worker_id, %remote_addr, "TLS handshake complete");
+                  metrics.tls_handshakes.get_or_create(&ResultLabel { result: "success" }).inc();
                   conn_rt.run_connection(tls_stream, dispatcher_factory).await;
                 }
                 Err(e) => {
                   warn!(worker_id, %remote_addr, error = ?e, service_type = C2sService::NAME, "TLS handshake failed");
+                  metrics.tls_handshakes.get_or_create(&ResultLabel { result: "failure" }).inc();
                 }
               }
             });

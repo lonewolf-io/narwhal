@@ -1,11 +1,5 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! Dialer types for the Tokio-based client.
-//!
-//! This module contains the [`Dialer`] trait and concrete implementations
-//! for TCP, Unix domain socket, and TLS transports built on Tokio and
-//! futures-io.
-
 use std::io;
 use std::pin::Pin;
 use std::sync::Arc;

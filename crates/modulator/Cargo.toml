@@ -21,6 +21,7 @@ narwhal-client = { path = "../client" }
 narwhal-common = { path = "../common" }
 narwhal-protocol = { path = "../protocol" }
 narwhal-util = { path = "../util" }
+prometheus-client = "0.24"
 
 [dev-dependencies]
 monoio = { version = "0.2.4", features = ["macros"] }

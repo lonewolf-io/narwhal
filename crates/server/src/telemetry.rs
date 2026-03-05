@@ -1,22 +1,38 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use std::io::stdout;
-
 use anyhow::anyhow;
+use monoio::io::AsyncWriteRentExt;
+use monoio::net::TcpListener;
+use prometheus_client::registry::Registry;
 use serde::{Deserialize, Serialize};
+use std::io::stdout;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 use tracing::metadata::LevelFilter;
+use tracing::warn;
 use tracing_subscriber::fmt;
 
+/// A metrics registry that supports dynamic metric registration.
+pub type MetricsRegistry = Arc<Mutex<Registry>>;
+
+// === Config ===
+
 /// Configuration for the telemetry system
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Config {
   /// the logging configuration
   #[serde(default)]
   logging: LoggingConfig,
+
+  /// the metrics configuration
+  #[serde(default)]
+  pub metrics: MetricsConfig,
 }
 
+// === LoggingConfig ===
+
 /// Configuration for the logging system
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LoggingConfig {
   /// the logging level
   #[serde(default = "default_level")]
@@ -41,14 +57,48 @@ fn default_format() -> String {
   "text".to_string()
 }
 
-/// Initializes the telemetry system based on the provided configuration.
-///
-/// # Arguments
-/// * `config` - The configuration for the telemetry system
-///
-/// # Returns
-/// An error if the telemetry system could not be initialized
-pub fn init(config: Config) -> anyhow::Result<()> {
+// === MetricsConfig ===
+
+/// Configuration for the metrics system.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MetricsConfig {
+  /// Whether metrics collection is enabled.
+  #[serde(default = "default_metrics_enabled")]
+  pub enabled: bool,
+
+  /// The bind address for the Prometheus scrape endpoint.
+  #[serde(default = "default_metrics_bind_address")]
+  pub bind_address: String,
+
+  /// The port for the Prometheus scrape endpoint.
+  #[serde(default = "default_metrics_port")]
+  pub port: u16,
+}
+
+impl Default for MetricsConfig {
+  fn default() -> Self {
+    Self {
+      enabled: default_metrics_enabled(),
+      bind_address: default_metrics_bind_address(),
+      port: default_metrics_port(),
+    }
+  }
+}
+
+fn default_metrics_enabled() -> bool {
+  true
+}
+
+fn default_metrics_bind_address() -> String {
+  "0.0.0.0".to_string()
+}
+
+fn default_metrics_port() -> u16 {
+  9090
+}
+
+/// Initializes the telemetry subsystem (logging + metrics).
+pub fn init(config: &Config) -> anyhow::Result<MetricsRegistry> {
   // Convert the string level to a tracing Level
   let level_filter = match config.logging.level.to_lowercase().as_str() {
     "trace" => LevelFilter::TRACE,
@@ -65,6 +115,58 @@ pub fn init(config: Config) -> anyhow::Result<()> {
     "text" => init_text_logger(level_filter),
     _ => return Err(anyhow!("invalid logging format: {}", config.logging.format)),
   };
+
+  let registry: MetricsRegistry = Arc::new(Mutex::new(Registry::default()));
+
+  // Start the scrape endpoint (if enabled).
+  start_scrape_endpoint(&config.metrics, registry.clone())?;
+
+  Ok(registry)
+}
+
+/// Spawns the Prometheus scrape endpoint on the current monoio runtime.
+///
+/// If metrics are disabled in the configuration, this is a no-op.
+fn start_scrape_endpoint(config: &MetricsConfig, registry: MetricsRegistry) -> anyhow::Result<()> {
+  if !config.enabled {
+    return Ok(());
+  }
+
+  let addr: SocketAddr = format!("{}:{}", config.bind_address, config.port)
+    .parse()
+    .map_err(|e| anyhow!("invalid metrics bind address: {}", e))?;
+
+  let listener = {
+    let std_listener =
+      std::net::TcpListener::bind(addr).map_err(|e| anyhow!("failed to bind metrics endpoint on {}: {}", addr, e))?;
+    std_listener.set_nonblocking(true)?;
+
+    TcpListener::from_std(std_listener)?
+  };
+
+  monoio::spawn(async move {
+    loop {
+      match listener.accept().await {
+        Ok((mut stream, _)) => {
+          let mut body = String::new();
+          let registry = registry.lock().unwrap();
+          if prometheus_client::encoding::text::encode(&mut body, &registry).is_ok() {
+            drop(registry);
+            let response = format!(
+              "HTTP/1.1 200 OK\r\nContent-Type: text/plain; version=0.0.4; charset=utf-8\r\nContent-Length: {}\r\n\r\n{}",
+              body.len(),
+              body
+            );
+            let _ = stream.write_all(response.into_bytes()).await;
+          }
+        },
+        Err(e) => {
+          warn!(error = %e, "metrics scrape endpoint accept error");
+        },
+      }
+    }
+  });
+
   Ok(())
 }
 

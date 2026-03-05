@@ -34,6 +34,10 @@ use narwhal_util::codec_monoio::{StreamReader, StreamReaderError};
 use narwhal_util::pool::{BucketedPool, MutablePoolBuffer, Pool, PoolBuffer};
 use narwhal_util::string_atom::StringAtom;
 
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::registry::Registry;
+
 use crate::core_dispatcher::Task;
 use crate::service::Service;
 
@@ -322,6 +326,37 @@ pub struct Config {
   pub rate_limit: u32,
 }
 
+/// Metrics for the connection runtime.
+#[derive(Clone)]
+struct Metrics {
+  connections_rejected: Counter,
+  connections_active: Gauge,
+  outbound_queue_full: Counter,
+}
+
+impl Metrics {
+  fn register(registry: &mut Registry) -> Self {
+    let connections_rejected = Counter::default();
+    registry.register(
+      "connections_rejected",
+      "Total connections rejected due to max connections limit",
+      connections_rejected.clone(),
+    );
+
+    let connections_active = Gauge::default();
+    registry.register("connections_active", "Number of currently active connections", connections_active.clone());
+
+    let outbound_queue_full = Counter::default();
+    registry.register(
+      "outbound_queue_full",
+      "Total times the outbound message queue was full",
+      outbound_queue_full.clone(),
+    );
+
+    Self { connections_rejected, connections_active, outbound_queue_full }
+  }
+}
+
 /// The connection runtime inner state.
 struct ConnRuntimeInner<ST: Service> {
   /// The configuration.
@@ -344,6 +379,9 @@ struct ConnRuntimeInner<ST: Service> {
 
   /// The shutdown cancellation token.
   shutdown_token: CancellationToken,
+
+  /// Prometheus metrics.
+  metrics: Metrics,
 
   /// Phantom data for the service type.
   _phantom: PhantomData<ST>,
@@ -377,7 +415,7 @@ impl<ST: Service> Clone for ConnRuntime<ST> {
 
 impl<ST: Service> ConnRuntime<ST> {
   /// Creates a new connection runtime.
-  pub async fn new(config: impl Into<Config>) -> Self {
+  pub async fn new(config: impl Into<Config>, registry: &mut Registry) -> Self {
     let conn_cfg = config.into();
 
     let max_connections = conn_cfg.max_connections as usize;
@@ -410,6 +448,7 @@ impl<ST: Service> ConnRuntime<ST> {
     };
 
     let shutdown_token = CancellationToken::new();
+    let metrics = Metrics::register(registry);
 
     let inner = ConnRuntimeInner {
       config: Arc::new(conn_cfg),
@@ -419,6 +458,7 @@ impl<ST: Service> ConnRuntime<ST> {
       payload_buffer_pool,
       newline_buffer,
       shutdown_token,
+      metrics,
       _phantom: PhantomData,
     };
 
@@ -474,12 +514,14 @@ impl<ST: Service> ConnRuntime<ST> {
     let newline_buffer = self.0.newline_buffer.clone();
     let active_connections = self.0.active_connections.clone();
     let shutdown_token = self.0.shutdown_token.clone();
+    let metrics = self.0.metrics.clone();
 
     // Check if we've reached the maximum number of connections
     let current_connections = active_connections.fetch_add(1, Ordering::SeqCst);
 
     if current_connections >= config.max_connections {
       active_connections.fetch_sub(1, Ordering::SeqCst);
+      metrics.connections_rejected.inc();
 
       let _ = stream.write_all(SERVER_OVERLOADED_ERROR.to_vec()).await;
       let _ = stream.flush().await;
@@ -491,13 +533,15 @@ impl<ST: Service> ConnRuntime<ST> {
       return;
     }
 
+    metrics.connections_active.inc();
+
     // Create a new connection.
     let send_msg_channel_size = config.outbound_message_queue_size as usize;
 
     let (send_msg_tx, send_msg_rx) = bounded(send_msg_channel_size);
     let (close_tx, close_rx) = bounded(1);
 
-    let tx = ConnTx { send_msg_tx, close_tx };
+    let tx = ConnTx::new(send_msg_tx, close_tx, metrics.outbound_queue_full.clone());
 
     let dispatcher = dispatcher_factory.create(handler, tx.clone()).await;
 
@@ -550,6 +594,7 @@ impl<ST: Service> ConnRuntime<ST> {
 
     // Decrement the active connections counter
     active_connections.fetch_sub(1, Ordering::SeqCst);
+    metrics.connections_active.dec();
 
     trace!(handler = handler, service_type = ST::NAME, "connection deregistered");
   }
@@ -1408,13 +1453,22 @@ struct PayloadReadResult<B> {
 }
 
 /// The connection transmitter.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ConnTx {
   /// The send message channel.
   send_msg_tx: Sender<(Message, Option<PoolBuffer>)>,
 
   /// The connection close channel.
   close_tx: Sender<Message>,
+
+  /// Counter incremented when the outbound queue is full.
+  m_outbound_queue_full: Counter,
+}
+
+impl std::fmt::Debug for ConnTx {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("ConnTx").finish_non_exhaustive()
+  }
 }
 
 // ===== impl ConnTx =====
@@ -1426,8 +1480,13 @@ impl ConnTx {
   ///
   /// * `send_msg_tx` - The send message channel.
   /// * `close_tx` - The connection close channel.
-  pub fn new(send_msg_tx: Sender<(Message, Option<PoolBuffer>)>, close_tx: Sender<Message>) -> Self {
-    Self { send_msg_tx, close_tx }
+  /// * `m_outbound_queue_full` - Counter incremented when the outbound queue is full.
+  pub fn new(
+    send_msg_tx: Sender<(Message, Option<PoolBuffer>)>,
+    close_tx: Sender<Message>,
+    m_outbound_queue_full: Counter,
+  ) -> Self {
+    Self { send_msg_tx, close_tx, m_outbound_queue_full }
   }
 
   /// Sends a message without a payload to the connection.
@@ -1465,6 +1524,7 @@ impl ConnTx {
         // The send channel is full, so most likely the client is either not reading
         // or is too slow to process incoming messages. In this case, we close the connection.
         self.close(Message::Error(ErrorParameters { id: None, reason: OutboundQueueIsFull.into(), detail: None }));
+        self.m_outbound_queue_full.inc();
       },
     }
   }

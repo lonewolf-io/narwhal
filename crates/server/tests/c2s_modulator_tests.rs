@@ -23,6 +23,7 @@ use narwhal_test_util::{
 };
 use narwhal_util::pool::Pool;
 use narwhal_util::string_atom::StringAtom;
+use prometheus_client::registry::Registry;
 
 // Test usernames
 const TEST_USER_1: &str = "test_user_1";
@@ -39,7 +40,13 @@ async fn test_c2s_modulator_single_step_auth() -> anyhow::Result<()> {
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(default_s2m_config(SHARED_SECRET), modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {
@@ -85,7 +92,13 @@ async fn test_c2s_modulator_auth_failed() -> anyhow::Result<()> {
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(default_s2m_config(SHARED_SECRET), modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {
@@ -139,7 +152,13 @@ async fn test_c2s_modulator_multi_step_auth() -> anyhow::Result<()> {
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(default_s2m_config(SHARED_SECRET), modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {
@@ -206,7 +225,13 @@ async fn test_c2s_modulator_send_private_payload() -> anyhow::Result<()> {
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(default_s2m_config(SHARED_SECRET), modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {
@@ -288,7 +313,8 @@ async fn test_c2s_modulator_receive_private_payload() -> anyhow::Result<()> {
   let mut core_dispatcher_m2s = CoreDispatcher::new(1);
   core_dispatcher_m2s.bootstrap().await?;
 
-  let mut m2s_listener = create_m2s_listener(m2s_config, m2s_payload_tx, core_dispatcher_m2s.clone()).await?;
+  let mut m2s_listener =
+    create_m2s_listener(m2s_config, m2s_payload_tx, core_dispatcher_m2s.clone(), &mut Registry::default()).await?;
   m2s_listener.bootstrap().await?;
 
   // Create a modulator that provides the receiver for private payloads.
@@ -305,7 +331,8 @@ async fn test_c2s_modulator_receive_private_payload() -> anyhow::Result<()> {
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(s2m_config, modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln =
+    create_s2m_listener(s2m_config, modulator, core_dispatcher.clone(), &mut Registry::default()).await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {
@@ -380,7 +407,13 @@ async fn test_c2s_modulator_broadcast_payload_validation() -> anyhow::Result<()>
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(default_s2m_config(SHARED_SECRET), modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {
@@ -477,7 +510,13 @@ async fn test_c2s_modulator_broadcast_payload_alteration() -> anyhow::Result<()>
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(default_s2m_config(SHARED_SECRET), modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {
@@ -565,7 +604,13 @@ async fn test_c2s_modulator_forward_event() -> anyhow::Result<()> {
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(default_s2m_config(SHARED_SECRET), modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {
@@ -677,7 +722,13 @@ async fn test_c2s_modulator_channel_survives_single_connection_drop() -> anyhow:
   let mut core_dispatcher = CoreDispatcher::new(1);
   core_dispatcher.bootstrap().await?;
 
-  let mut s2m_ln = create_s2m_listener(default_s2m_config(SHARED_SECRET), modulator, core_dispatcher.clone()).await?;
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
   s2m_ln.bootstrap().await?;
 
   let s2m_client = S2mClient::new(S2mConfig {

@@ -6,6 +6,11 @@ use std::time::Duration;
 
 use async_lock::RwLock;
 use async_trait::async_trait;
+use prometheus_client::encoding::EncodeLabelSet;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::family::Family;
+use prometheus_client::metrics::histogram::Histogram;
+use prometheus_client::registry::Registry;
 use tracing::{error, trace};
 
 use narwhal_common::conn::{ConnTx, State};
@@ -30,6 +35,50 @@ use crate::transmitter::{Resource, Transmitter};
 
 /// The C2S connection runtime.
 pub type C2sConnRuntime = narwhal_common::conn::ConnRuntime<C2sService>;
+
+// ===== C2sDispatcherMetrics =====
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+struct ResultLabel {
+  result: &'static str,
+}
+
+/// Metric handles for a C2sDispatcher instance.
+#[derive(Clone)]
+struct C2sDispatcherMetrics {
+  auth_attempts: Family<ResultLabel, Counter>,
+  identify_attempts: Family<ResultLabel, Counter>,
+  messages_received: Counter,
+  broadcast_payload_bytes: Histogram,
+  modulator_forward_payload: Family<ResultLabel, Counter>,
+}
+
+impl C2sDispatcherMetrics {
+  fn register(registry: &mut Registry) -> Self {
+    let auth_attempts = Family::default();
+    registry.register("auth_attempts", "Authentication attempts", auth_attempts.clone());
+    let identify_attempts = Family::default();
+    registry.register("identify_attempts", "Identification attempts", identify_attempts.clone());
+    let messages_received = Counter::default();
+    registry.register("messages_received", "Messages received from clients", messages_received.clone());
+    let broadcast_payload_bytes =
+      Histogram::new(prometheus_client::metrics::histogram::exponential_buckets(64.0, 2.0, 12));
+    registry.register("broadcast_payload_bytes", "Broadcast payload sizes in bytes", broadcast_payload_bytes.clone());
+    let modulator_forward_payload = Family::default();
+    registry.register(
+      "modulator_forward_payload",
+      "Modulator payload forward results",
+      modulator_forward_payload.clone(),
+    );
+    Self { auth_attempts, identify_attempts, messages_received, broadcast_payload_bytes, modulator_forward_payload }
+  }
+}
+
+impl std::fmt::Debug for C2sDispatcherMetrics {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("C2sDispatcherMetrics").finish_non_exhaustive()
+  }
+}
 
 #[derive(Clone)]
 /// A transmitter implementation for C2S connections.
@@ -70,8 +119,22 @@ impl std::fmt::Debug for C2sTransmitter {
   }
 }
 
-#[derive(Clone, Debug)]
-pub struct C2sDispatcherFactory(Arc<RwLock<C2sDispatcherFactoryInner>>);
+pub struct C2sDispatcherFactory {
+  inner: Arc<RwLock<C2sDispatcherFactoryInner>>,
+  metrics: C2sDispatcherMetrics,
+}
+
+impl Clone for C2sDispatcherFactory {
+  fn clone(&self) -> Self {
+    Self { inner: self.inner.clone(), metrics: self.metrics.clone() }
+  }
+}
+
+impl std::fmt::Debug for C2sDispatcherFactory {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("C2sDispatcherFactory").finish_non_exhaustive()
+  }
+}
 
 // ==== impl C2sDispatcherFactory ====
 
@@ -82,6 +145,7 @@ impl C2sDispatcherFactory {
     channel_manager: ChannelManager,
     c2s_router: c2s::Router,
     modulator: Option<Arc<dyn Modulator>>,
+    registry: &mut Registry,
   ) -> anyhow::Result<Self> {
     let auth_required = {
       match modulator.as_ref() {
@@ -92,14 +156,14 @@ impl C2sDispatcherFactory {
 
     let inner = C2sDispatcherFactoryInner { config, channel_manager, c2s_router, modulator, auth_required };
 
-    Ok(Self(Arc::new(RwLock::new(inner))))
+    Ok(Self { inner: Arc::new(RwLock::new(inner)), metrics: C2sDispatcherMetrics::register(registry) })
   }
 }
 
 #[async_trait(?Send)]
 impl narwhal_common::conn::DispatcherFactory<C2sDispatcher> for C2sDispatcherFactory {
   async fn create(&mut self, handler: usize, tx: ConnTx) -> C2sDispatcher {
-    let inner = self.0.read().await;
+    let inner = self.inner.read().await;
 
     C2sDispatcher::new(
       handler,
@@ -109,6 +173,7 @@ impl narwhal_common::conn::DispatcherFactory<C2sDispatcher> for C2sDispatcherFac
       inner.channel_manager.clone(),
       inner.c2s_router.clone(),
       tx,
+      self.metrics.clone(),
     )
   }
 
@@ -147,7 +212,7 @@ pub struct C2sDispatcher(Option<C2sDispatcherInner>);
 impl C2sDispatcher {
   /// Initializes the dispatcher with the given parameters.
   #[allow(clippy::too_many_arguments)]
-  pub fn new(
+  fn new(
     handler: usize,
     config: Arc<Config>,
     auth_required: bool,
@@ -155,6 +220,7 @@ impl C2sDispatcher {
     channel_manager: ChannelManager,
     c2s_router: c2s::Router,
     conn_tx: ConnTx,
+    metrics: C2sDispatcherMetrics,
   ) -> Self {
     let inner = C2sDispatcherInner {
       config,
@@ -165,6 +231,7 @@ impl C2sDispatcher {
       transmitter: Arc::new(C2sTransmitter::new(handler, conn_tx)),
       modulator,
       auth_required,
+      metrics,
     };
 
     Self(Some(inner))
@@ -196,6 +263,9 @@ struct C2sDispatcherInner {
 
   /// The negotiated heartbeat interval.
   heartbeat_interval: Duration,
+
+  /// Metric handles for this dispatcher.
+  metrics: C2sDispatcherMetrics,
 }
 
 // ===== impl C2sDispatcherInner =====
@@ -323,6 +393,7 @@ impl C2sDispatcherInner {
                 nid: Some(nid.clone().into()),
               }));
 
+              self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "success" }).inc();
               trace!(handler = self.transmitter.handler, nid = nid.to_string(), "user authenticated");
 
               Ok(true)
@@ -334,6 +405,7 @@ impl C2sDispatcherInner {
                 nid: None,
               }));
 
+              self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "challenge" }).inc();
               Ok(false)
             },
             AuthResult::Failure => {
@@ -343,6 +415,7 @@ impl C2sDispatcherInner {
                 nid: None,
               }));
 
+              self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "failure" }).inc();
               Ok(false)
             },
           },
@@ -376,6 +449,7 @@ impl C2sDispatcherInner {
         ) {
           self.nid = Some(nid);
         } else {
+          self.metrics.identify_attempts.get_or_create(&ResultLabel { result: "failure" }).inc();
           return Err(narwhal_protocol::Error::new(UsernameInUse).into());
         }
 
@@ -383,6 +457,7 @@ impl C2sDispatcherInner {
 
         self.transmitter.send_message(Message::IdentifyAck(IdentifyAckParameters { nid: StringAtom::from(nid) }));
 
+        self.metrics.identify_attempts.get_or_create(&ResultLabel { result: "success" }).inc();
         trace!(handler = self.transmitter.handler, nid = nid.to_string(), "user identified");
 
         Ok(true)
@@ -411,6 +486,8 @@ impl C2sDispatcherInner {
     msg: Message,
     payload: Option<PoolBuffer>,
   ) -> anyhow::Result<()> {
+    self.metrics.messages_received.inc();
+
     match msg {
       Message::Broadcast { .. } => {
         self.dispatch_broadcast_message(msg, payload.unwrap()).await?;
@@ -495,16 +572,19 @@ impl C2sDispatcherInner {
       match modulator.forward_broadcast_payload(request).await {
         Ok(forward_res) => match forward_res.result {
           ForwardBroadcastPayloadResult::Valid => {
-            // Keep the original payload
+            self.metrics.modulator_forward_payload.get_or_create(&ResultLabel { result: "valid" }).inc();
           },
           ForwardBroadcastPayloadResult::ValidWithAlteration { altered_payload: modified_payload } => {
+            self.metrics.modulator_forward_payload.get_or_create(&ResultLabel { result: "valid_altered" }).inc();
             altered_payload = modified_payload;
           },
           ForwardBroadcastPayloadResult::Invalid => {
+            self.metrics.modulator_forward_payload.get_or_create(&ResultLabel { result: "invalid" }).inc();
             return Err(narwhal_protocol::Error::new(BadRequest).with_id(correlation_id).into());
           },
         },
         Err(e) => {
+          self.metrics.modulator_forward_payload.get_or_create(&ResultLabel { result: "error" }).inc();
           error!(
             handler = self.transmitter.handler,
             nid = nid.to_string(),
@@ -524,6 +604,8 @@ impl C2sDispatcherInner {
       .channel_manager
       .broadcast_payload(altered_payload, channel_id.clone(), nid.clone(), transmitter, qos, correlation_id)
       .await?;
+
+    self.metrics.broadcast_payload_bytes.observe(payload_length as f64);
 
     trace!(
       handler = self.transmitter.handler,

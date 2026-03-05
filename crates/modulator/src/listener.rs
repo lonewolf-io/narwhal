@@ -15,6 +15,9 @@ use narwhal_common::conn::{ConnRuntime, Dispatcher, DispatcherFactory};
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_common::service::{M2sService, S2mService, Service};
 
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::registry::Registry;
+
 use crate::config::*;
 use crate::conn::{M2sDispatcher, M2sDispatcherFactory, S2mDispatcher, S2mDispatcherFactory};
 
@@ -23,6 +26,21 @@ pub type S2mListener<M> = Listener<S2mDispatcher<M>, S2mDispatcherFactory<M>, S2
 
 /// Type alias for M2S listener.
 pub type M2sListener = Listener<M2sDispatcher, M2sDispatcherFactory, M2sService>;
+
+// ===== Metrics =====
+
+#[derive(Clone)]
+struct Metrics {
+  connections_accepted: Counter,
+}
+
+impl Metrics {
+  fn register(registry: &mut Registry) -> Self {
+    let connections_accepted = Counter::default();
+    registry.register("connections_accepted", "TCP/Unix connections accepted", connections_accepted.clone());
+    Self { connections_accepted }
+  }
+}
 
 /// Modulator server listener.
 ///
@@ -53,6 +71,9 @@ where
   /// Channels to signal accept loops to stop.
   shutdown_txs: Vec<Sender<()>>,
 
+  /// Metric handles.
+  metrics: Metrics,
+
   /// Phantom data for the dispatcher type.
   _dispatcher: std::marker::PhantomData<D>,
 }
@@ -71,7 +92,10 @@ where
     conn_rt: ConnRuntime<ST>,
     dispatcher_factory: DF,
     core_dispatcher: CoreDispatcher,
+    registry: &mut Registry,
   ) -> Self {
+    let metrics = Metrics::register(registry);
+
     Listener {
       config,
       conn_rt,
@@ -79,6 +103,7 @@ where
       core_dispatcher,
       local_address: None,
       shutdown_txs: Vec::new(),
+      metrics,
       _dispatcher: std::marker::PhantomData,
     }
   }
@@ -194,6 +219,7 @@ where
       let conn_rt = conn_rt.clone();
       let dispatcher_factory = dispatcher_factory.clone();
       let worker_listener = pre_created_listener.take();
+      let connections_accepted = self.metrics.connections_accepted.clone();
 
       self
         .core_dispatcher
@@ -206,6 +232,7 @@ where
             dispatcher_factory,
             ready_tx,
             shutdown_rx,
+            connections_accepted,
           )
         })
         .await?;
@@ -244,11 +271,12 @@ where
     self.shutdown_txs.push(shutdown_tx);
 
     let socket_path_str = self.config.socket_path.clone();
+    let connections_accepted = self.metrics.connections_accepted.clone();
 
     self
       .core_dispatcher
       .dispatch_at_shard(0, move || {
-        run_unix_accept_loop(socket_path_str, conn_rt, dispatcher_factory, ready_tx, shutdown_rx)
+        run_unix_accept_loop(socket_path_str, conn_rt, dispatcher_factory, ready_tx, shutdown_rx, connections_accepted)
       })
       .await?;
 
@@ -273,6 +301,7 @@ async fn run_tcp_accept_loop<D, DF, ST>(
   dispatcher_factory: DF,
   ready_tx: async_channel::Sender<()>,
   shutdown_rx: async_channel::Receiver<()>,
+  connections_accepted: Counter,
 ) where
   D: Dispatcher,
   DF: DispatcherFactory<D>,
@@ -305,6 +334,8 @@ async fn run_tcp_accept_loop<D, DF, ST>(
           Ok((tcp_stream, remote_addr)) => {
             trace!(worker_id, %remote_addr, service_type = ST::NAME, "accepted TCP connection");
 
+            connections_accepted.inc();
+
             let conn_rt = conn_rt.clone();
             let dispatcher_factory = dispatcher_factory.clone();
 
@@ -332,6 +363,7 @@ async fn run_unix_accept_loop<D, DF, ST>(
   dispatcher_factory: DF,
   ready_tx: async_channel::Sender<()>,
   shutdown_rx: async_channel::Receiver<()>,
+  connections_accepted: Counter,
 ) where
   D: Dispatcher,
   DF: DispatcherFactory<D>,
@@ -353,6 +385,8 @@ async fn run_unix_accept_loop<D, DF, ST>(
         match result {
           Ok((unix_stream, _)) => {
             trace!(service_type = ST::NAME, "accepted Unix connection");
+
+            connections_accepted.inc();
 
             let conn_rt = conn_rt.clone();
             let dispatcher_factory = dispatcher_factory.clone();

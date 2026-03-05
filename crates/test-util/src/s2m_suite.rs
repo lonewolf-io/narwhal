@@ -7,6 +7,7 @@ use monoio::net::TcpStream;
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::{Modulator, S2mListener};
 use narwhal_protocol::{Message, S2mConnectParameters};
+use prometheus_client::registry::Registry;
 
 use crate::TestConn;
 
@@ -31,17 +32,25 @@ impl<M: Modulator> S2mSuite<M> {
   pub async fn with_config(config: narwhal_modulator::S2mServerConfig, modulator: M) -> Self {
     let arc_config = Arc::new(config);
 
+    let mut registry = Registry::default();
+
     let dispatcher_factory =
-      narwhal_modulator::conn::S2mDispatcherFactory::<M>::new(arc_config.clone(), Arc::new(modulator));
+      narwhal_modulator::conn::S2mDispatcherFactory::<M>::new(arc_config.clone(), Arc::new(modulator), &mut registry);
 
     let server_config = arc_config.server.clone();
 
-    let conn_rt = narwhal_modulator::conn::S2mConnRuntime::new(&server_config).await;
+    let conn_rt = narwhal_modulator::conn::S2mConnRuntime::new(&server_config, &mut registry).await;
 
     let mut core_dispatcher = CoreDispatcher::new(1);
     core_dispatcher.bootstrap().await.expect("core dispatcher bootstrap failed");
 
-    let ln = S2mListener::new(server_config.listener.clone(), conn_rt, dispatcher_factory, core_dispatcher.clone());
+    let ln = S2mListener::new(
+      server_config.listener.clone(),
+      conn_rt,
+      dispatcher_factory,
+      core_dispatcher.clone(),
+      &mut registry,
+    );
 
     Self { config: arc_config, ln, core_dispatcher }
   }
