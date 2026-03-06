@@ -7,15 +7,13 @@ use prometheus_client::registry::Registry;
 use serde::{Deserialize, Serialize};
 use std::io::stdout;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tracing::metadata::LevelFilter;
 use tracing::warn;
 use tracing_subscriber::fmt;
 
 /// A metrics registry that supports dynamic metric registration.
-pub type MetricsRegistry = Arc<Mutex<Registry>>;
-
-// === Config ===
+pub type MetricsRegistry = Arc<async_lock::Mutex<Registry>>;
 
 /// Configuration for the telemetry system
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -29,8 +27,6 @@ pub struct Config {
   pub metrics: MetricsConfig,
 }
 
-// === LoggingConfig ===
-
 /// Configuration for the logging system
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LoggingConfig {
@@ -42,6 +38,8 @@ pub struct LoggingConfig {
   #[serde(default = "default_format")]
   format: String,
 }
+
+// === impl LoggingConfig ===
 
 impl Default for LoggingConfig {
   fn default() -> Self {
@@ -56,8 +54,6 @@ fn default_level() -> String {
 fn default_format() -> String {
   "text".to_string()
 }
-
-// === MetricsConfig ===
 
 /// Configuration for the metrics system.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -74,6 +70,8 @@ pub struct MetricsConfig {
   #[serde(default = "default_metrics_port")]
   pub port: u16,
 }
+
+// === impl MetricsConfig ===
 
 impl Default for MetricsConfig {
   fn default() -> Self {
@@ -116,7 +114,7 @@ pub fn init(config: &Config) -> anyhow::Result<MetricsRegistry> {
     _ => return Err(anyhow!("invalid logging format: {}", config.logging.format)),
   };
 
-  let registry: MetricsRegistry = Arc::new(Mutex::new(Registry::default()));
+  let registry: MetricsRegistry = Arc::new(async_lock::Mutex::new(Registry::default()));
 
   // Start the scrape endpoint (if enabled).
   start_scrape_endpoint(&config.metrics, registry.clone())?;
@@ -149,7 +147,7 @@ fn start_scrape_endpoint(config: &MetricsConfig, registry: MetricsRegistry) -> a
       match listener.accept().await {
         Ok((mut stream, _)) => {
           let mut body = String::new();
-          let registry = registry.lock().unwrap();
+          let registry = registry.lock().await;
           if prometheus_client::encoding::text::encode(&mut body, &registry).is_ok() {
             drop(registry);
             let response = format!(

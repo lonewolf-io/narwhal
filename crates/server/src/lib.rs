@@ -72,7 +72,7 @@ async fn run_server(
   core_dispatcher.bootstrap().await?;
 
   // Lock the registry for the entire metric-registration phase.
-  let mut guard = registry.lock().unwrap();
+  let mut guard = registry.lock().await;
 
   // Initialize the modulator, passing the m2s-prefixed registry.
   let m2s_reg = guard.sub_registry_with_prefix("narwhal_m2s");

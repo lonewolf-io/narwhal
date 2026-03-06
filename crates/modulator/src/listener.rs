@@ -293,6 +293,7 @@ where
   }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_tcp_accept_loop<D, DF, ST>(
   worker_id: usize,
   bind_address: SocketAddr,
