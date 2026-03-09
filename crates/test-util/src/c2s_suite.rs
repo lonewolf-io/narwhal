@@ -71,8 +71,13 @@ impl C2sSuite {
   ) -> anyhow::Result<Self> {
     let arc_config = Arc::new(config);
 
+    // Bootstrap the core dispatcher first.
+    let mut core_dispatcher = CoreDispatcher::new(narwhal_server::num_workers());
+    core_dispatcher.bootstrap().await?;
+
     let local_domain = StringAtom::from("localhost");
-    let c2s_router = c2s::Router::new(local_domain.clone());
+    let mut c2s_router = c2s::Router::new(local_domain.clone());
+    c2s_router.bootstrap(&core_dispatcher).await?;
 
     let global_router = GlobalRouter::new(c2s_router.clone());
 
@@ -122,21 +127,18 @@ impl C2sSuite {
     )
     .await?;
 
-    let mut runtime_dispatcher = CoreDispatcher::new(narwhal_server::num_workers());
-    runtime_dispatcher.bootstrap().await?;
-
     let ln = c2s::C2sListener::new(
       arc_config.listener.clone(),
       conn_rt.clone(),
       dispatcher_factory,
-      runtime_dispatcher.clone(),
+      core_dispatcher.clone(),
       &mut registry,
     );
 
     Ok(Self {
       config: arc_config,
       ln,
-      runtime_dispatcher,
+      runtime_dispatcher: core_dispatcher,
       m2s_payload_rx,
       m2s_router_task_handle: None,
       local_router: c2s_router,
@@ -164,6 +166,9 @@ impl C2sSuite {
       shutdown_tx.close();
       let _ = handle.await;
     }
+
+    // Close the router's mailboxes so shard actors exit before workers shut down.
+    self.local_router.shutdown();
 
     self.runtime_dispatcher.shutdown().await?;
 

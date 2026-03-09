@@ -86,7 +86,10 @@ impl GlobalRouter {
 
     for target in targets {
       if target.domain == local_domain {
-        self.c2s_router.route_to(msg.clone(), payload_opt.clone(), target.username.clone(), excluding_local_handler)?;
+        self
+          .c2s_router
+          .route_to(msg.clone(), payload_opt.clone(), target.username.clone(), excluding_local_handler)
+          .await?;
       } else {
         // TODO(ortuman): Implement S2S routing
       }

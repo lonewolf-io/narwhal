@@ -378,12 +378,10 @@ impl C2sDispatcherInner {
               };
 
               // Register the connection non-exclusively.
-              let _ = self.c2s_router.register_connection(
-                nid.username.clone(),
-                self.transmitter.clone(),
-                self.transmitter.handler,
-                false,
-              );
+              let _ = self
+                .c2s_router
+                .register_connection(nid.username.clone(), self.transmitter.clone(), self.transmitter.handler, false)
+                .await;
 
               self.nid = Some(nid.clone());
 
@@ -441,12 +439,11 @@ impl C2sDispatcherInner {
         };
 
         // Register the connection exclusively.
-        if self.c2s_router.register_connection(
-          nid.username.clone(),
-          self.transmitter.clone(),
-          self.transmitter.handler,
-          true,
-        ) {
+        if self
+          .c2s_router
+          .register_connection(nid.username.clone(), self.transmitter.clone(), self.transmitter.handler, true)
+          .await
+        {
           self.nid = Some(nid);
         } else {
           self.metrics.identify_attempts.get_or_create(&ResultLabel { result: "failure" }).inc();
@@ -1150,15 +1147,12 @@ impl narwhal_common::conn::Dispatcher for C2sDispatcher {
       let mut channel_mng = inner.channel_manager.clone();
 
       // Unregister the username.
-      inner
-        .c2s_router
-        .unregister_connection(&nid.username, inner.transmitter.handler, || async {
-          // Leave from all channels when last connection is closed.
-          channel_mng.leave_all_channels(nid.clone()).await?;
+      let should_cleanup = inner.c2s_router.unregister_connection(&nid.username, inner.transmitter.handler).await;
 
-          Ok::<(), anyhow::Error>(())
-        })
-        .await?;
+      if should_cleanup {
+        // Leave from all channels when last connection is closed.
+        channel_mng.leave_all_channels(nid.clone()).await?;
+      }
     }
 
     Ok(())

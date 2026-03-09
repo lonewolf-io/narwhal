@@ -399,7 +399,7 @@ impl ChannelManager {
             return Err(narwhal_protocol::Error::new(Forbidden).with_id(correlation_id).into());
           }
 
-          if !router.c2s_router().has_connection(&oh_behalf_nid.username) {
+          if !router.c2s_router().has_connection(&oh_behalf_nid.username).await {
             return Err(narwhal_protocol::Error::new(UserNotRegistered).with_id(correlation_id).into());
           }
 

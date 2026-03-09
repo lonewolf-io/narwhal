@@ -99,7 +99,8 @@ async fn run_server(
   let max_payload_size = c2s_config.limits.max_payload_size;
 
   let local_domain = StringAtom::from(c2s_config.listener.domain.as_str());
-  let c2s_router = c2s::Router::new(local_domain.clone());
+  let mut c2s_router = c2s::Router::new(local_domain.clone());
+  c2s_router.bootstrap(&core_dispatcher).await?;
 
   let global_router = GlobalRouter::new(c2s_router.clone());
 
@@ -145,7 +146,7 @@ async fn run_server(
   let mut route_m2s_payload_handle = Option::<(monoio::task::JoinHandle<()>, async_channel::Sender<()>)>::None;
 
   if let Some(m2s_payload_rx) = modulator_service.m2s_payload_rx.take() {
-    route_m2s_payload_handle = Some(c2s::route_m2s_private_payload(m2s_payload_rx, c2s_router));
+    route_m2s_payload_handle = Some(c2s::route_m2s_private_payload(m2s_payload_rx, c2s_router.clone()));
   }
 
   modulator_service.bootstrap().await?;
@@ -163,6 +164,8 @@ async fn run_server(
     shutdown_tx.close();
     let _ = handle.await;
   }
+
+  c2s_router.shutdown();
 
   core_dispatcher.shutdown().await?;
 

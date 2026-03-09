@@ -1,195 +1,269 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
-use dashmap::DashMap;
+use async_channel::{Receiver, Sender};
 
+use narwhal_common::core_dispatcher::CoreDispatcher;
+use narwhal_protocol::Message;
 use narwhal_util::pool::PoolBuffer;
 use narwhal_util::string_atom::StringAtom;
 
 use crate::transmitter::Transmitter;
 
-const DEFAULT_ROUTER_SHARD_COUNT: usize = 1024;
+const DEFAULT_MAILBOX_CAPACITY: usize = 16384;
 
-struct Entry {
-  /// The handler ID for this connection.
-  pub handler: usize,
-
-  /// The connection transmitter.
-  pub transmitter: Arc<dyn Transmitter>,
+/// Deterministically maps a username to a shard index.
+fn shard_for(username: &StringAtom, shard_count: usize) -> usize {
+  let mut hasher = DefaultHasher::new();
+  username.hash(&mut hasher);
+  (hasher.finish() as usize) % shard_count
 }
 
-// ===== impl Entry =====
-
-impl Entry {
-  /// Creates a new `Entry` with the specified handler ID and transmitter.
-  pub fn new(handler: usize, transmitter: Arc<dyn Transmitter>) -> Self {
-    Entry { handler, transmitter }
-  }
-}
-
-#[derive(Clone)]
-pub struct Router {
-  /// The local domain for this router.
-  local_domain: StringAtom,
-
-  /// The connections map.
-  connections: Arc<DashMap<StringAtom, Vec<Entry>>>,
-}
-
-// ===== impl Router =====
-
-impl Router {
-  /// Creates a new `Router` with the default shard count.
-  ///
-  /// # Arguments
-  ///
-  /// * `local_domain` - The local domain for this router
-  ///
-  /// # Returns
-  ///
-  /// A new `Router` instance with default capacity
-  pub fn new(local_domain: StringAtom) -> Self {
-    Self::new_with_shard_count(local_domain, DEFAULT_ROUTER_SHARD_COUNT)
-  }
-
-  /// Creates a new `Router` with a specified shard count.
-  ///
-  /// # Arguments
-  ///
-  /// * `local_domain` - The local domain for this router
-  /// * `shard_count` - The shard count for the map
-  ///
-  /// # Returns
-  ///
-  /// A new `Router` instance with the specified capacity
-  pub fn new_with_shard_count(local_domain: StringAtom, shard_count: usize) -> Self {
-    Self { local_domain, connections: Arc::new(DashMap::with_shard_amount(shard_count)) }
-  }
-
-  /// Routes a message to a single target.
-  ///
-  /// # Arguments
-  ///
-  /// * `msg` - The message to route
-  /// * `payload_opt` - Optional payload buffer to include with the message
-  /// * `target` - The target username to route the message to
-  /// * `excluding_local_handler` - Optional handler ID to exclude from routing
-  ///
-  /// # Returns
-  ///
-  /// `Ok(())` if the routing was successful, or an error if routing failed
-  pub fn route_to(
-    &self,
-    msg: narwhal_protocol::Message,
+enum Command {
+  RouteTo {
+    msg: Message,
     payload_opt: Option<PoolBuffer>,
     target: StringAtom,
-    excluding_local_handler: Option<usize>,
-  ) -> anyhow::Result<()> {
-    if let Some(entries) = self.connections.get(&target) {
-      for entry in entries.iter() {
-        if Some(entry.handler) == excluding_local_handler {
+    excluding_handler: Option<usize>,
+  },
+  Register {
+    username: StringAtom,
+    transmitter: Arc<dyn Transmitter>,
+    handler: usize,
+    exclusive: bool,
+    reply_tx: Sender<bool>,
+  },
+  Unregister {
+    username: StringAtom,
+    handler: usize,
+    reply_tx: Sender<bool>,
+  },
+  HasConnection {
+    username: StringAtom,
+    reply_tx: Sender<bool>,
+  },
+}
+
+struct Entry {
+  handler: usize,
+  transmitter: Arc<dyn Transmitter>,
+}
+
+struct RouterShard {
+  connections: HashMap<StringAtom, Vec<Entry>>,
+  mailbox: Receiver<Command>,
+  total_connections: Arc<AtomicUsize>,
+}
+
+// === impl RouterShard ===
+
+impl RouterShard {
+  fn new(mailbox: Receiver<Command>, total_connections: Arc<AtomicUsize>) -> Self {
+    Self { connections: HashMap::new(), mailbox, total_connections }
+  }
+
+  async fn run(mut self) {
+    while let Ok(cmd) = self.mailbox.recv().await {
+      self.handle(cmd).await;
+    }
+  }
+
+  async fn handle(&mut self, cmd: Command) {
+    match cmd {
+      Command::RouteTo { msg, payload_opt, target, excluding_handler } => {
+        self.route_to(msg, payload_opt, &target, excluding_handler);
+      },
+      Command::Register { username, transmitter, handler, exclusive, reply_tx } => {
+        let ok = self.register(username, transmitter, handler, exclusive);
+        let _ = reply_tx.send(ok).await;
+      },
+      Command::Unregister { username, handler, reply_tx } => {
+        let should_cleanup = self.unregister(&username, handler);
+        let _ = reply_tx.send(should_cleanup).await;
+      },
+      Command::HasConnection { username, reply_tx } => {
+        let exists = self.has_connection(&username);
+        let _ = reply_tx.send(exists).await;
+      },
+    }
+  }
+
+  fn route_to(
+    &self,
+    msg: Message,
+    payload_opt: Option<PoolBuffer>,
+    target: &StringAtom,
+    excluding_handler: Option<usize>,
+  ) {
+    if let Some(entries) = self.connections.get(target) {
+      for entry in entries {
+        if Some(entry.handler) == excluding_handler {
           continue;
         }
         entry.transmitter.send_message_with_payload(msg.clone(), payload_opt.clone());
       }
     }
+  }
 
+  fn register(
+    &mut self,
+    username: StringAtom,
+    transmitter: Arc<dyn Transmitter>,
+    handler: usize,
+    exclusive: bool,
+  ) -> bool {
+    let entries = self.connections.entry(username).or_default();
+    if exclusive && !entries.is_empty() {
+      return false;
+    }
+    entries.push(Entry { handler, transmitter });
+    self.total_connections.fetch_add(1, Ordering::Relaxed);
+    true
+  }
+
+  fn unregister(&mut self, username: &StringAtom, handler: usize) -> bool {
+    let Some(entries) = self.connections.get_mut(username) else {
+      return false;
+    };
+    let before = entries.len();
+    entries.retain(|e| e.handler != handler);
+    let removed = before - entries.len();
+    if removed > 0 {
+      self.total_connections.fetch_sub(removed, Ordering::Relaxed);
+    }
+    if entries.is_empty() {
+      self.connections.remove(username);
+      true
+    } else {
+      false
+    }
+  }
+
+  fn has_connection(&self, username: &StringAtom) -> bool {
+    self.connections.get(username).is_some_and(|entries| !entries.is_empty())
+  }
+}
+
+#[derive(Clone)]
+pub struct Router {
+  local_domain: StringAtom,
+  mailboxes: Arc<Vec<Sender<Command>>>,
+  total_connections: Arc<AtomicUsize>,
+  mailbox_capacity: usize,
+}
+
+// === Router ===
+
+impl Router {
+  /// Creates a new `Router`.
+  pub fn new(local_domain: StringAtom) -> Self {
+    Self::with_mailbox_capacity(local_domain, DEFAULT_MAILBOX_CAPACITY)
+  }
+
+  /// Creates a new `Router` with a custom mailbox capacity.
+  pub fn with_mailbox_capacity(local_domain: StringAtom, mailbox_capacity: usize) -> Self {
+    Self {
+      local_domain,
+      mailboxes: Arc::new(Vec::new()),
+      total_connections: Arc::new(AtomicUsize::new(0)),
+      mailbox_capacity,
+    }
+  }
+
+  /// Spawns one shard actor per core on the given dispatcher.
+  pub async fn bootstrap(&mut self, core_dispatcher: &CoreDispatcher) -> anyhow::Result<()> {
+    let shard_count = core_dispatcher.shard_count();
+    let mut mailboxes = Vec::with_capacity(shard_count);
+
+    for shard_id in 0..shard_count {
+      let (tx, rx) = async_channel::bounded(self.mailbox_capacity);
+      mailboxes.push(tx);
+
+      let tc = self.total_connections.clone();
+      core_dispatcher
+        .dispatch_at_shard(shard_id, move || async move {
+          RouterShard::new(rx, tc).run().await;
+        })
+        .await?;
+    }
+
+    self.mailboxes = Arc::new(mailboxes);
+    Ok(())
+  }
+
+  /// Shuts down the router by closing all mailbox channels.
+  pub fn shutdown(&self) {
+    for tx in self.mailboxes.iter() {
+      tx.close();
+    }
+  }
+
+  /// Routes a message to a single target.
+  pub async fn route_to(
+    &self,
+    msg: Message,
+    payload_opt: Option<PoolBuffer>,
+    target: StringAtom,
+    excluding_local_handler: Option<usize>,
+  ) -> anyhow::Result<()> {
+    let shard = shard_for(&target, self.mailboxes.len());
+    let cmd = Command::RouteTo { msg, payload_opt, target, excluding_handler: excluding_local_handler };
+    self.mailboxes[shard].send(cmd).await.map_err(|_| anyhow::anyhow!("router shard closed"))?;
     Ok(())
   }
 
   /// Registers a connection for a specific username.
-  ///
-  /// # Arguments
-  ///
-  /// * `username` - The username to register the connection for
-  /// * `transmitter` - The connection transmitter for sending messages
-  /// * `handler` - The handler ID for this connection
-  /// * `exclusive` - If true, registration fails if connections already exist for this username
-  ///
-  /// # Returns
-  ///
-  /// `true` if the connection was successfully registered, `false` if exclusive was requested
-  /// and connections already exist
-  pub fn register_connection(
+  /// Returns `true` if successfully registered, `false` if exclusive was requested and connections already exist.
+  pub async fn register_connection(
     &self,
     username: StringAtom,
     transmitter: Arc<dyn Transmitter>,
     handler: usize,
     exclusive: bool,
   ) -> bool {
-    let mut entry = self.connections.entry(username).or_default();
-
-    if exclusive && !entry.is_empty() {
+    let shard = shard_for(&username, self.mailboxes.len());
+    let (reply_tx, reply_rx) = async_channel::bounded(1);
+    let cmd = Command::Register { username, transmitter, handler, exclusive, reply_tx };
+    if self.mailboxes[shard].send(cmd).await.is_err() {
       return false;
     }
-
-    entry.push(Entry::new(handler, transmitter));
-    true
+    reply_rx.recv().await.unwrap_or(false)
   }
 
   /// Unregisters a connection for a specific username and handler.
-  ///
-  /// If the connection count for the username reaches zero after unregistering,
-  /// the provided closure will be executed.
-  ///
-  /// # Arguments
-  ///
-  /// * `username` - The username to unregister the connection for
-  /// * `handler` - The handler ID of the connection to remove
-  /// * `cleanup` - An async closure to execute when connection count reaches zero
-  ///
-  /// # Returns
-  ///
-  /// Returns the result of the closure if executed, or `Ok(())` if not executed
-  pub async fn unregister_connection<F, Fut, E>(
-    &self,
-    username: &StringAtom,
-    handler: usize,
-    cleanup: F,
-  ) -> Result<(), E>
-  where
-    F: FnOnce() -> Fut,
-    Fut: std::future::Future<Output = Result<(), E>>,
-  {
-    self.connections.entry(username.clone()).and_modify(|entries| {
-      entries.retain(|entry| entry.handler != handler);
-    });
-
-    // Remove the entry if it's empty
-    let was_removed = self.connections.remove_if(username, |_, entries| entries.is_empty());
-
-    if was_removed.is_some() { cleanup().await } else { Ok(()) }
+  /// Returns `true` if the last connection for this username was removed.
+  pub async fn unregister_connection(&self, username: &StringAtom, handler: usize) -> bool {
+    let shard = shard_for(username, self.mailboxes.len());
+    let (reply_tx, reply_rx) = async_channel::bounded(1);
+    let cmd = Command::Unregister { username: username.clone(), handler, reply_tx };
+    if self.mailboxes[shard].send(cmd).await.is_err() {
+      return false;
+    }
+    reply_rx.recv().await.unwrap_or(false)
   }
 
   /// Checks if there are any connections registered for a given username.
-  ///
-  /// # Arguments
-  ///
-  /// * `username` - The username to check for connections
-  ///
-  /// # Returns
-  ///
-  /// `true` if at least one connection exists for the username, `false` otherwise
-  pub fn has_connection(&self, username: &StringAtom) -> bool {
-    self.connections.get(username).is_some_and(|entries| !entries.is_empty())
+  pub async fn has_connection(&self, username: &StringAtom) -> bool {
+    let shard = shard_for(username, self.mailboxes.len());
+    let (reply_tx, reply_rx) = async_channel::bounded(1);
+    let cmd = Command::HasConnection { username: username.clone(), reply_tx };
+    if self.mailboxes[shard].send(cmd).await.is_err() {
+      return false;
+    }
+    reply_rx.recv().await.unwrap_or(false)
   }
 
-  /// Returns the total number of connections.
-  ///
-  /// # Returns
-  ///
-  /// The total count of registered connections
+  /// Returns the total number of connections across all shards.
   #[allow(clippy::len_without_is_empty)]
   pub fn len(&self) -> usize {
-    self.connections.iter().map(|entry| entry.value().len()).sum()
+    self.total_connections.load(Ordering::Relaxed)
   }
 
   /// Returns the local domain of this router.
-  ///
-  /// # Returns
-  ///
-  /// A clone of the local domain `StringAtom`
   pub fn local_domain(&self) -> StringAtom {
     self.local_domain.clone()
   }
@@ -198,5 +272,195 @@ impl Router {
 impl std::fmt::Debug for Router {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("Router").field("local_domain", &self.local_domain).field("total_connections", &self.len()).finish()
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use std::sync::Arc;
+  use std::sync::atomic::AtomicBool;
+
+  use narwhal_protocol::Message;
+  use narwhal_util::pool::PoolBuffer;
+
+  use crate::transmitter::Resource;
+
+  /// A mock transmitter that records whether a message was received.
+  #[derive(Clone)]
+  struct MockTransmitter {
+    handler: usize,
+    received: Arc<AtomicBool>,
+  }
+
+  impl MockTransmitter {
+    fn new(handler: usize) -> Self {
+      Self { handler, received: Arc::new(AtomicBool::new(false)) }
+    }
+
+    fn was_called(&self) -> bool {
+      self.received.load(Ordering::SeqCst)
+    }
+  }
+
+  impl Transmitter for MockTransmitter {
+    fn send_message(&self, _message: Message) {
+      self.received.store(true, Ordering::SeqCst);
+    }
+
+    fn send_message_with_payload(&self, _message: Message, _payload_opt: Option<PoolBuffer>) {
+      self.received.store(true, Ordering::SeqCst);
+    }
+
+    fn resource(&self) -> Resource {
+      Resource { domain: None, handler: self.handler }
+    }
+  }
+
+  /// Creates a test router with a single shard actor on the current monoio runtime.
+  fn create_test_router() -> Router {
+    let total_connections = Arc::new(AtomicUsize::new(0));
+    let (tx, rx) = async_channel::bounded(64);
+
+    let tc = total_connections.clone();
+    monoio::spawn(async move {
+      RouterShard::new(rx, tc).run().await;
+    });
+
+    Router {
+      local_domain: StringAtom::from("localhost"),
+      mailboxes: Arc::new(vec![tx]),
+      total_connections,
+      mailbox_capacity: 64,
+    }
+  }
+
+  #[monoio::test]
+  async fn register_and_has_connection() {
+    let router = create_test_router();
+    let username = StringAtom::from("alice");
+    let tx = MockTransmitter::new(1);
+
+    assert!(!router.has_connection(&username).await);
+    assert!(router.register_connection(username.clone(), Arc::new(tx), 1, false).await);
+    assert!(router.has_connection(&username).await);
+  }
+
+  #[monoio::test]
+  async fn exclusive_registration_fails_when_exists() {
+    let router = create_test_router();
+    let username = StringAtom::from("bob");
+
+    let tx1 = MockTransmitter::new(1);
+    assert!(router.register_connection(username.clone(), Arc::new(tx1), 1, false).await);
+
+    let tx2 = MockTransmitter::new(2);
+    assert!(!router.register_connection(username.clone(), Arc::new(tx2), 2, true).await);
+  }
+
+  #[monoio::test]
+  async fn exclusive_registration_succeeds_when_empty() {
+    let router = create_test_router();
+    let username = StringAtom::from("carol");
+
+    let tx = MockTransmitter::new(1);
+    assert!(router.register_connection(username.clone(), Arc::new(tx), 1, true).await);
+  }
+
+  #[monoio::test]
+  async fn unregister_last_connection_returns_true() {
+    let router = create_test_router();
+    let username = StringAtom::from("dave");
+
+    let tx = MockTransmitter::new(1);
+    router.register_connection(username.clone(), Arc::new(tx), 1, false).await;
+
+    assert!(router.unregister_connection(&username, 1).await);
+    assert!(!router.has_connection(&username).await);
+  }
+
+  #[monoio::test]
+  async fn unregister_non_last_connection_returns_false() {
+    let router = create_test_router();
+    let username = StringAtom::from("eve");
+
+    let tx1 = MockTransmitter::new(1);
+    let tx2 = MockTransmitter::new(2);
+    router.register_connection(username.clone(), Arc::new(tx1), 1, false).await;
+    router.register_connection(username.clone(), Arc::new(tx2), 2, false).await;
+
+    assert!(!router.unregister_connection(&username, 1).await);
+    assert!(router.has_connection(&username).await);
+  }
+
+  #[monoio::test]
+  async fn route_to_delivers_message() {
+    let router = create_test_router();
+    let username = StringAtom::from("frank");
+    let tx = MockTransmitter::new(1);
+    let tx_ref = tx.clone();
+
+    router.register_connection(username.clone(), Arc::new(tx), 1, false).await;
+
+    let msg = Message::Ping(Default::default());
+    router.route_to(msg, None, username.clone(), None).await.unwrap();
+
+    // Use has_connection as a barrier — it round-trips through the actor,
+    // ensuring the prior RouteTo command has been processed.
+    let _ = router.has_connection(&username).await;
+
+    assert!(tx_ref.was_called());
+  }
+
+  #[monoio::test]
+  async fn route_to_excludes_handler() {
+    let router = create_test_router();
+    let username = StringAtom::from("grace");
+
+    let tx1 = MockTransmitter::new(1);
+    let tx2 = MockTransmitter::new(2);
+    let tx1_ref = tx1.clone();
+    let tx2_ref = tx2.clone();
+
+    router.register_connection(username.clone(), Arc::new(tx1), 1, false).await;
+    router.register_connection(username.clone(), Arc::new(tx2), 2, false).await;
+
+    let msg = Message::Ping(Default::default());
+    router.route_to(msg, None, username.clone(), Some(1)).await.unwrap();
+
+    // Use has_connection as a barrier.
+    let _ = router.has_connection(&username).await;
+
+    assert!(!tx1_ref.was_called());
+    assert!(tx2_ref.was_called());
+  }
+
+  #[monoio::test]
+  async fn len_tracks_connections() {
+    let router = create_test_router();
+
+    assert_eq!(router.len(), 0);
+
+    let tx1 = MockTransmitter::new(1);
+    router.register_connection(StringAtom::from("user1"), Arc::new(tx1), 1, false).await;
+    assert_eq!(router.len(), 1);
+
+    let tx2 = MockTransmitter::new(2);
+    router.register_connection(StringAtom::from("user2"), Arc::new(tx2), 2, false).await;
+    assert_eq!(router.len(), 2);
+
+    router.unregister_connection(&StringAtom::from("user1"), 1).await;
+    assert_eq!(router.len(), 1);
+  }
+
+  #[test]
+  fn shard_assignment_is_deterministic() {
+    let username = StringAtom::from("test_user");
+    let shard_count = 8;
+
+    let s1 = shard_for(&username, shard_count);
+    let s2 = shard_for(&username, shard_count);
+    assert_eq!(s1, s2);
   }
 }

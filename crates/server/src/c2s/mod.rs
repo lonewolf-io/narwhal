@@ -69,7 +69,7 @@ async fn route_loop(
               length: outbound.payload.len() as u32,
             });
             for target in outbound.targets {
-              match router.route_to(mod_priv_msg.clone(), Some(outbound.payload.clone()), target, None) {
+              match router.route_to(mod_priv_msg.clone(), Some(outbound.payload.clone()), target, None).await {
                 Ok(_) => {},
                 Err(err) => {
                   warn!("failed to route private payload: {}", err);
