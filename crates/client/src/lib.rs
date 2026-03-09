@@ -40,6 +40,7 @@
 pub(crate) mod auth;
 pub(crate) mod config;
 pub(crate) mod conn_state;
+pub mod error;
 pub(crate) mod object_pool;
 
 pub mod monoio;
@@ -51,3 +52,5 @@ pub use config::{
   C2sConfig, C2sSessionExtraInfo, Config, M2sConfig, M2sSessionExtraInfo, S2mConfig, S2mSessionExtraInfo, SessionInfo,
   TCP_NETWORK, UNIX_NETWORK,
 };
+
+pub use error::{Error, Result};

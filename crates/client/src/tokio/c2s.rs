@@ -193,7 +193,7 @@ impl C2sClient {
   /// # Returns
   ///
   /// Returns a `C2sClient` instance that can be used to communicate with the Narwhal server.
-  pub fn new(config: C2sConfig, auth_method: AuthMethod) -> anyhow::Result<Self> {
+  pub fn new(config: C2sConfig, auth_method: AuthMethod) -> crate::Result<Self> {
     let dialer = Arc::new(TlsDialer::new(config.address.as_str().into())?);
 
     let handshaker = C2sHandshaker::new(config.heartbeat_interval, auth_method);
@@ -222,7 +222,7 @@ impl C2sClient {
   /// # Returns
   ///
   /// Returns a `C2sClient` instance that can be used to communicate with the Narwhal server.
-  pub fn new_with_insecure_tls(config: C2sConfig, auth_method: AuthMethod) -> anyhow::Result<Self> {
+  pub fn new_with_insecure_tls(config: C2sConfig, auth_method: AuthMethod) -> crate::Result<Self> {
     let dialer = Arc::new(TlsDialer::with_certificate_verification(config.address.as_str().into(), false)?);
 
     let handshaker = C2sHandshaker::new(config.heartbeat_interval, auth_method);
@@ -252,8 +252,8 @@ impl C2sClient {
   /// Returns an error if:
   /// * The client is not connected to the server
   /// * The session information is not available
-  pub async fn session_info(&self) -> anyhow::Result<(SessionInfo, C2sSessionExtraInfo)> {
-    self.client.session_info().await
+  pub async fn session_info(&self) -> crate::Result<(SessionInfo, C2sSessionExtraInfo)> {
+    self.client.session_info().await.map_err(Into::into)
   }
 
   /// Joins a channel on the server.
@@ -269,19 +269,21 @@ impl C2sClient {
   /// # Errors
   ///
   /// Returns an error if the join operation fails.
-  pub async fn join_channel(&self, channel: StringAtom) -> anyhow::Result<()> {
+  pub async fn join_channel(&self, channel: StringAtom) -> crate::Result<()> {
     use narwhal_protocol::JoinChannelParameters;
 
     let id = self.client.next_id().await;
     let message = Message::JoinChannel(JoinChannelParameters { id, channel, on_behalf: None });
 
     let handle = self.client.send_message(message, None).await?;
-    let (response, _) = handle.await??;
+    let (response, _) = handle.await.map_err(anyhow::Error::from)??;
 
     match response {
       Message::JoinChannelAck(_) => Ok(()),
-      Message::Error(err) => Err(anyhow!("failed to join channel: {:?}", err.reason)),
-      _ => Err(anyhow!("unexpected response to join channel request")),
+      Message::Error(err) => {
+        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
+      },
+      _ => Err(anyhow!("unexpected response to join channel request").into()),
     }
   }
 
@@ -298,19 +300,21 @@ impl C2sClient {
   /// # Errors
   ///
   /// Returns an error if the leave operation fails.
-  pub async fn leave_channel(&self, channel: StringAtom) -> anyhow::Result<()> {
+  pub async fn leave_channel(&self, channel: StringAtom) -> crate::Result<()> {
     use narwhal_protocol::LeaveChannelParameters;
 
     let id = self.client.next_id().await;
     let message = Message::LeaveChannel(LeaveChannelParameters { id, channel, on_behalf: None });
 
     let handle = self.client.send_message(message, None).await?;
-    let (response, _) = handle.await??;
+    let (response, _) = handle.await.map_err(anyhow::Error::from)??;
 
     match response {
       Message::LeaveChannelAck(_) => Ok(()),
-      Message::Error(err) => Err(anyhow!("failed to leave channel: {:?}", err.reason)),
-      _ => Err(anyhow!("unexpected response to leave channel request")),
+      Message::Error(err) => {
+        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
+      },
+      _ => Err(anyhow!("unexpected response to leave channel request").into()),
     }
   }
 
@@ -335,7 +339,7 @@ impl C2sClient {
     channel: StringAtom,
     max_clients: u32,
     max_payload_size: u32,
-  ) -> anyhow::Result<()> {
+  ) -> crate::Result<()> {
     use narwhal_protocol::SetChannelConfigurationParameters;
 
     let id = self.client.next_id().await;
@@ -347,12 +351,14 @@ impl C2sClient {
     });
 
     let handle = self.client.send_message(message, None).await?;
-    let (response, _) = handle.await??;
+    let (response, _) = handle.await.map_err(anyhow::Error::from)??;
 
     match response {
       Message::SetChannelConfigurationAck(_) => Ok(()),
-      Message::Error(err) => Err(anyhow!("failed to configure channel: {:?}", err.reason)),
-      _ => Err(anyhow!("unexpected response to configure channel request")),
+      Message::Error(err) => {
+        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
+      },
+      _ => Err(anyhow!("unexpected response to configure channel request").into()),
     }
   }
 
@@ -382,7 +388,7 @@ impl C2sClient {
     acl_type: AclType,
     acl_action: AclAction,
     nids: Vec<Nid>,
-  ) -> anyhow::Result<()> {
+  ) -> crate::Result<()> {
     use narwhal_protocol::SetChannelAclParameters;
 
     let id = self.client.next_id().await;
@@ -395,12 +401,14 @@ impl C2sClient {
     });
 
     let handle = self.client.send_message(message, None).await?;
-    let (response, _) = handle.await??;
+    let (response, _) = handle.await.map_err(anyhow::Error::from)??;
 
     match response {
       Message::SetChannelAclAck(_) => Ok(()),
-      Message::Error(err) => Err(anyhow!("failed to set channel ACL: {:?}", err.reason)),
-      _ => Err(anyhow!("unexpected response to set channel ACL request")),
+      Message::Error(err) => {
+        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
+      },
+      _ => Err(anyhow!("unexpected response to set channel ACL request").into()),
     }
   }
 
@@ -419,7 +427,7 @@ impl C2sClient {
   /// # Errors
   ///
   /// Returns an error if the broadcast operation fails.
-  pub async fn broadcast(&self, channel: StringAtom, qos: Option<QoS>, payload: PoolBuffer) -> anyhow::Result<()> {
+  pub async fn broadcast(&self, channel: StringAtom, qos: Option<QoS>, payload: PoolBuffer) -> crate::Result<()> {
     use narwhal_protocol::BroadcastParameters;
 
     let protocol_qos = qos.map(|q| q.as_u8());
@@ -429,12 +437,14 @@ impl C2sClient {
     let message = Message::Broadcast(BroadcastParameters { id, channel, qos: protocol_qos, length });
 
     let handle = self.client.send_message(message, Some(payload)).await?;
-    let (response, _) = handle.await??;
+    let (response, _) = handle.await.map_err(anyhow::Error::from)??;
 
     match response {
       Message::BroadcastAck(_) => Ok(()),
-      Message::Error(err) => Err(anyhow!("failed to broadcast: reason={}, detail={:?}", err.reason, err.detail)),
-      _ => Err(anyhow!("unexpected response to broadcast request")),
+      Message::Error(err) => {
+        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
+      },
+      _ => Err(anyhow!("unexpected response to broadcast request").into()),
     }
   }
 
@@ -446,8 +456,8 @@ impl C2sClient {
   /// # Errors
   ///
   /// Returns an error if the shutdown process fails.
-  pub async fn shutdown(&self) -> anyhow::Result<()> {
-    self.client.shutdown().await
+  pub async fn shutdown(&self) -> crate::Result<()> {
+    self.client.shutdown().await.map_err(Into::into)
   }
 
   /// Returns a stream of inbound messages from the server.
