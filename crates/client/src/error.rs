@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use narwhal_protocol::ErrorParameters;
+
 /// Errors returned by narwhal client operations.
 #[derive(Debug)]
 pub enum Error {
@@ -44,6 +46,12 @@ impl std::error::Error for Error {
 impl From<anyhow::Error> for Error {
   fn from(err: anyhow::Error) -> Self {
     Error::Other(err)
+  }
+}
+
+impl From<ErrorParameters> for Error {
+  fn from(params: ErrorParameters) -> Self {
+    Error::Protocol { reason: params.reason.to_string(), detail: params.detail.map(|d| d.to_string()) }
   }
 }
 

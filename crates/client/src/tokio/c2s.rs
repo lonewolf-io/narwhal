@@ -280,9 +280,7 @@ impl C2sClient {
 
     match response {
       Message::JoinChannelAck(_) => Ok(()),
-      Message::Error(err) => {
-        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
-      },
+      Message::Error(err) => Err(err.into()),
       _ => Err(anyhow!("unexpected response to join channel request").into()),
     }
   }
@@ -311,9 +309,7 @@ impl C2sClient {
 
     match response {
       Message::LeaveChannelAck(_) => Ok(()),
-      Message::Error(err) => {
-        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
-      },
+      Message::Error(err) => Err(err.into()),
       _ => Err(anyhow!("unexpected response to leave channel request").into()),
     }
   }
@@ -355,9 +351,7 @@ impl C2sClient {
 
     match response {
       Message::SetChannelConfigurationAck(_) => Ok(()),
-      Message::Error(err) => {
-        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
-      },
+      Message::Error(err) => Err(err.into()),
       _ => Err(anyhow!("unexpected response to configure channel request").into()),
     }
   }
@@ -405,9 +399,7 @@ impl C2sClient {
 
     match response {
       Message::SetChannelAclAck(_) => Ok(()),
-      Message::Error(err) => {
-        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
-      },
+      Message::Error(err) => Err(err.into()),
       _ => Err(anyhow!("unexpected response to set channel ACL request").into()),
     }
   }
@@ -441,9 +433,7 @@ impl C2sClient {
 
     match response {
       Message::BroadcastAck(_) => Ok(()),
-      Message::Error(err) => {
-        Err(crate::Error::Protocol { reason: err.reason.to_string(), detail: err.detail.map(|d| d.to_string()) })
-      },
+      Message::Error(err) => Err(err.into()),
       _ => Err(anyhow!("unexpected response to broadcast request").into()),
     }
   }

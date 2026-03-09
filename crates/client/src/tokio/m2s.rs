@@ -79,7 +79,7 @@ impl M2sClient {
   /// Returns `Ok(M2sClient)` if the client is successfully created, or an error if:
   /// - The configuration validation fails
   /// - The underlying client creation fails
-  pub fn new(config: M2sConfig) -> anyhow::Result<Self> {
+  pub fn new(config: M2sConfig) -> crate::Result<Self> {
     config.validate()?;
 
     let dialer: Arc<dyn Dialer<Stream = Stream>> = match config.network.as_str() {
@@ -104,8 +104,8 @@ impl M2sClient {
   ///
   /// Returns `Ok(SessionInfo)` containing the session details if successful,
   /// or an error if the client is not connected or the server is unreachable.
-  pub async fn session_info(&self) -> anyhow::Result<SessionInfo> {
-    let (session_info, _) = self.client.session_info().await?;
+  pub async fn session_info(&self) -> crate::Result<SessionInfo> {
+    let (session_info, _) = self.client.session_info().await.map_err(crate::Error::from)?;
     Ok(session_info)
   }
 
@@ -150,19 +150,19 @@ impl M2sClient {
   /// - The server fails to acknowledge the message
   /// - An unexpected message type is received
   /// - The network operation fails
-  pub async fn route_private_payload(&self, payload: PoolBuffer, targets: Vec<StringAtom>) -> anyhow::Result<()> {
+  pub async fn route_private_payload(&self, payload: PoolBuffer, targets: Vec<StringAtom>) -> crate::Result<()> {
     let id = self.client.next_id().await;
 
     let params = M2sModDirectParameters { id, targets, length: payload.len() as u32 };
 
     let handle = self.client.send_message(Message::M2sModDirect(params), Some(payload)).await?;
 
-    match handle.await? {
-      Ok((msg, _)) => match msg {
-        Message::M2sModDirectAck(_) => Ok(()),
-        _ => Err(anyhow::anyhow!("unexpected message type during private payload routing")),
-      },
-      Err(e) => anyhow::bail!(e),
+    let (response, _) = handle.await.map_err(anyhow::Error::from)??;
+
+    match response {
+      Message::M2sModDirectAck(_) => Ok(()),
+      Message::Error(err) => Err(err.into()),
+      _ => Err(anyhow::anyhow!("unexpected message type during private payload routing").into()),
     }
   }
 
@@ -173,7 +173,7 @@ impl M2sClient {
   ///
   /// After calling this method, the client instance should not be used for
   /// further operations.
-  pub async fn shutdown(&self) -> anyhow::Result<()> {
-    self.client.shutdown().await
+  pub async fn shutdown(&self) -> crate::Result<()> {
+    self.client.shutdown().await.map_err(Into::into)
   }
 }

@@ -83,7 +83,7 @@ impl S2mClient {
   /// Returns `Ok(S2mClient)` if the client is successfully created, or an error if:
   /// - The configuration validation fails
   /// - The underlying client creation fails
-  pub fn new(config: S2mConfig) -> anyhow::Result<Self> {
+  pub fn new(config: S2mConfig) -> crate::Result<Self> {
     config.validate()?;
 
     let dialer: Arc<dyn Dialer<Stream = Stream>> = match config.network.as_str() {
@@ -114,8 +114,8 @@ impl S2mClient {
   /// - The client is not connected
   /// - The session has been terminated
   /// - Network communication fails
-  pub async fn session_info(&self) -> anyhow::Result<(SessionInfo, S2mSessionExtraInfo)> {
-    self.client.session_info().await
+  pub async fn session_info(&self) -> crate::Result<(SessionInfo, S2mSessionExtraInfo)> {
+    self.client.session_info().await.map_err(Into::into)
   }
 
   /// Generates the next unique correlation ID for message tracking.
@@ -147,7 +147,7 @@ impl S2mClient {
   /// This method performs a clean shutdown by signalling cancellation to all
   /// active connections and background I/O tasks. After calling this method,
   /// the client instance should not be used for further operations.
-  pub async fn shutdown(&self) -> anyhow::Result<()> {
-    self.client.shutdown().await
+  pub async fn shutdown(&self) -> crate::Result<()> {
+    self.client.shutdown().await.map_err(Into::into)
   }
 }
