@@ -526,11 +526,15 @@ impl ChannelShard {
   }
 
   async fn leave_channels(&mut self, nid: Nid, handlers: Vec<StringAtom>) -> anyhow::Result<()> {
+    let mut removed = 0u64;
+
     for handler in &handlers {
-      self.do_leave(handler, &nid, None).await?;
+      if self.do_leave(handler, &nid, None).await? {
+        removed += 1;
+      }
     }
 
-    self.metrics.channel_leaves.inc_by(handlers.len() as u64);
+    self.metrics.channel_leaves.inc_by(removed);
 
     Ok(())
   }
@@ -874,16 +878,21 @@ impl ChannelShard {
   }
 
   /// Performs the core leave logic: notify members, remove from channel, handle owner change
-  /// or channel deletion.
+  /// or channel deletion. Returns `true` if the member was actually removed.
   async fn do_leave(
     &mut self,
     handler: &StringAtom,
     nid: &Nid,
     excluding_resource: Option<Resource>,
-  ) -> anyhow::Result<()> {
+  ) -> anyhow::Result<bool> {
     let Some(channel) = self.channels.get(handler) else {
-      return Ok(());
+      return Ok(false);
     };
+
+    if !channel.is_member(nid) {
+      return Ok(false);
+    }
+
     let as_owner = channel.is_owner(nid);
 
     channel.notify_member_left(nid, excluding_resource, as_owner, self.local_domain.clone()).await?;
@@ -894,14 +903,16 @@ impl ChannelShard {
     if channel.is_empty() {
       self.channels.remove(handler);
       self.metrics.channels_active.dec();
-      return Ok(());
+      return Ok(true);
     }
+
     if as_owner {
       let channel = self.channels.get_mut(handler).unwrap();
       let new_owner = channel.pick_new_owner().unwrap();
       channel.notify_member_joined(&new_owner, None, true, self.local_domain.clone()).await?;
     }
-    Ok(())
+
+    Ok(true)
   }
 }
 
@@ -1041,8 +1052,8 @@ impl ChannelManager {
   pub async fn leave_all_channels(&self, nid: Nid) -> anyhow::Result<()> {
     self.assert_bootstrapped();
 
-    // Release all membership slots and get the list of channel handlers.
-    let handlers = self.membership.release_all_slots(&nid.username).await;
+    // Get channels first.
+    let handlers = self.membership.get_channels(&nid.username).await;
     if handlers.is_empty() {
       return Ok(());
     }
@@ -1065,6 +1076,9 @@ impl ChannelManager {
     for reply_rx in reply_rxs {
       reply_rx.recv().await??;
     }
+
+    // All leaves succeeded, now release the membership slots.
+    self.membership.release_all_slots(&nid.username).await;
 
     Ok(())
   }
