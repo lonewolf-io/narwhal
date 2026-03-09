@@ -93,6 +93,7 @@ async fn run_server(
 
   let c2s_config = Arc::new(c2s_server_config);
 
+  let max_channels = c2s_config.limits.max_channels;
   let max_clients_per_channel = c2s_config.limits.max_clients_per_channel;
   let max_channels_per_client = c2s_config.limits.max_channels_per_client;
   let max_payload_size = c2s_config.limits.max_payload_size;
@@ -111,6 +112,7 @@ async fn run_server(
   let mut channel_mng = ChannelManager::new(
     global_router.clone(),
     notifier.clone(),
+    max_channels,
     max_clients_per_channel,
     max_channels_per_client,
     max_payload_size,

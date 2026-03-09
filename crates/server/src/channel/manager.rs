@@ -3,14 +3,15 @@
 use std::collections::{HashMap, HashSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_channel::{Receiver, Sender};
 
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_protocol::ErrorReason::{
-  BadRequest, ChannelIsFull, ChannelNotFound, Forbidden, NotAllowed, NotImplemented, PolicyViolation, UserInChannel,
-  UserNotInChannel, UserNotRegistered,
+  BadRequest, ChannelIsFull, ChannelNotFound, Forbidden, NotAllowed, NotImplemented, PolicyViolation,
+  ResourceLimitReached, UserInChannel, UserNotInChannel, UserNotRegistered,
 };
 use narwhal_protocol::{
   AclAction, AclType, BroadcastAckParameters, ChannelAclParameters, ChannelConfigurationParameters,
@@ -309,6 +310,8 @@ struct ChannelShard {
   router: GlobalRouter,
   notifier: Notifier,
   local_domain: StringAtom,
+  total_channels: Arc<AtomicUsize>,
+  max_channels: u32,
   max_clients_per_channel: u32,
   max_channels_per_client: u32,
   max_payload_size: u32,
@@ -390,8 +393,19 @@ impl ChannelShard {
 
     // Create the channel if it doesn't exist.
     if as_owner {
+      if self.total_channels.load(Ordering::SeqCst) >= self.max_channels as usize {
+        self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+        return Err(
+          narwhal_protocol::Error::new(ResourceLimitReached)
+            .with_id(correlation_id)
+            .with_detail("maximum channels reached")
+            .into(),
+        );
+      }
+
       let config = ChannelConfig { max_clients: self.max_clients_per_channel, max_payload_size: self.max_payload_size };
       self.channels.insert(handler.clone(), Channel::new(handler.clone(), config, self.notifier.clone()));
+      self.total_channels.fetch_add(1, Ordering::SeqCst);
     }
 
     let new_member_nid = match on_behalf_nid {
@@ -572,6 +586,7 @@ impl ChannelShard {
 
     transmitter.send_message(Message::DeleteChannelAck(DeleteChannelAckParameters { id: correlation_id }));
 
+    self.total_channels.fetch_sub(1, Ordering::SeqCst);
     self.metrics.channels_deleted.inc();
     self.metrics.channels_active.dec();
 
@@ -902,6 +917,7 @@ impl ChannelShard {
 
     if channel.is_empty() {
       self.channels.remove(handler);
+      self.total_channels.fetch_sub(1, Ordering::SeqCst);
       self.metrics.channels_active.dec();
       return Ok(true);
     }
@@ -923,6 +939,8 @@ pub struct ChannelManager {
   membership: Membership,
   router: GlobalRouter,
   notifier: Notifier,
+  total_channels: Arc<AtomicUsize>,
+  max_channels: u32,
   max_clients_per_channel: u32,
   max_channels_per_client: u32,
   max_payload_size: u32,
@@ -943,6 +961,7 @@ impl ChannelManager {
   pub fn new(
     router: GlobalRouter,
     notifier: Notifier,
+    max_channels: u32,
     max_clients_per_channel: u32,
     max_channels_per_client: u32,
     max_payload_size: u32,
@@ -953,6 +972,8 @@ impl ChannelManager {
       membership: Membership::new(),
       router,
       notifier,
+      total_channels: Arc::new(AtomicUsize::new(0)),
+      max_channels,
       max_clients_per_channel,
       max_channels_per_client,
       max_payload_size,
@@ -980,6 +1001,8 @@ impl ChannelManager {
         router: self.router.clone(),
         notifier: self.notifier.clone(),
         local_domain: local_domain.clone(),
+        total_channels: self.total_channels.clone(),
+        max_channels: self.max_channels,
         max_clients_per_channel: self.max_clients_per_channel,
         max_channels_per_client: self.max_channels_per_client,
         max_payload_size: self.max_payload_size,
@@ -1004,6 +1027,11 @@ impl ChannelManager {
       tx.close();
     }
     self.membership.shutdown();
+  }
+
+  /// Returns the total number of active channels across all shards.
+  pub fn total_channels(&self) -> usize {
+    self.total_channels.load(Ordering::SeqCst)
   }
 
   /// Joins a channel.

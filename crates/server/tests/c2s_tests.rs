@@ -2029,3 +2029,43 @@ async fn test_c2s_delete_channel_as_non_owner() -> anyhow::Result<()> {
 
   Ok(())
 }
+
+#[monoio::test(enable_timer = true)]
+async fn test_c2s_max_channels_reached() -> anyhow::Result<()> {
+  let mut config = default_c2s_config();
+  config.limits.max_channels = 1;
+
+  let mut suite = C2sSuite::new(config).await?;
+  suite.setup().await?;
+
+  suite.identify(TEST_USER_1).await?;
+
+  // Create the first channel — should succeed.
+  suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
+
+  // Try to create a second channel — should fail with ResourceLimitReached.
+  suite
+    .write_message(
+      TEST_USER_1,
+      Message::JoinChannel(JoinChannelParameters { id: 1, channel: "!test2@localhost".into(), on_behalf: None }),
+    )
+    .await?;
+
+  let reply = suite.read_message(TEST_USER_1).await?;
+  assert_message!(
+    reply,
+    Message::Error,
+    ErrorParameters {
+      id: Some(1),
+      reason: narwhal_protocol::ErrorReason::ResourceLimitReached.into(),
+      detail: Some(StringAtom::from("maximum channels reached")),
+    }
+  );
+
+  // Verify the client is still connected — send a valid request.
+  suite.leave_channel(TEST_USER_1, "!test1@localhost").await?;
+
+  suite.teardown().await?;
+
+  Ok(())
+}

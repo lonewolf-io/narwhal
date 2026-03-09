@@ -91,7 +91,7 @@ impl MembershipShard {
   }
 
   fn release_all_slots(&mut self, username: &StringAtom) -> Arc<[StringAtom]> {
-    self.user_channels.remove(username).map(|set| Arc::from_iter(set)).unwrap_or_default()
+    self.user_channels.remove(username).map(Arc::from_iter).unwrap_or_default()
   }
 
   fn get_channels(&self, username: &StringAtom) -> Arc<[StringAtom]> {

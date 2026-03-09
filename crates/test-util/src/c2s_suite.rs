@@ -88,6 +88,7 @@ impl C2sSuite {
 
     let notifier = Notifier::new(global_router.clone(), modulator.clone());
 
+    let max_channels = arc_config.limits.max_channels;
     let max_clients_per_channel = arc_config.limits.max_clients_per_channel;
     let max_channels_per_client = arc_config.limits.max_channels_per_client;
     let max_payload_size = arc_config.limits.max_payload_size;
@@ -97,6 +98,7 @@ impl C2sSuite {
     let mut channel_mng = ChannelManager::new(
       global_router,
       notifier,
+      max_channels,
       max_clients_per_channel,
       max_channels_per_client,
       max_payload_size,

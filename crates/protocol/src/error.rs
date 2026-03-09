@@ -53,8 +53,8 @@ pub enum ErrorReason {
   UsernameInUse,
   /// The user has not completed the registration process.
   UserNotRegistered,
-  /// The operation failed due to a concurrent modification conflict.
-  ResourceConflict,
+  /// A server-wide resource limit has been reached (e.g., maximum number of channels).
+  ResourceLimitReached,
   /// The response exceeds the maximum message size limit.
   ResponseTooLarge,
 }
@@ -89,7 +89,7 @@ impl From<ErrorReason> for &str {
       ErrorReason::UserNotInChannel => "USER_NOT_IN_CHANNEL",
       ErrorReason::UsernameInUse => "USERNAME_IN_USE",
       ErrorReason::UserNotRegistered => "USER_NOT_REGISTERED",
-      ErrorReason::ResourceConflict => "RESOURCE_CONFLICT",
+      ErrorReason::ResourceLimitReached => "RESOURCE_LIMIT_REACHED",
       ErrorReason::ResponseTooLarge => "RESPONSE_TOO_LARGE",
     }
   }
@@ -129,7 +129,7 @@ impl FromStr for ErrorReason {
       "USER_NOT_IN_CHANNEL" => Ok(ErrorReason::UserNotInChannel),
       "USERNAME_IN_USE" => Ok(ErrorReason::UsernameInUse),
       "USER_NOT_REGISTERED" => Ok(ErrorReason::UserNotRegistered),
-      "RESOURCE_CONFLICT" => Ok(ErrorReason::ResourceConflict),
+      "RESOURCE_LIMIT_REACHED" => Ok(ErrorReason::ResourceLimitReached),
       "RESPONSE_TOO_LARGE" => Ok(ErrorReason::ResponseTooLarge),
       _ => anyhow::bail!("unknown error reason: {}", s),
     }
@@ -188,7 +188,7 @@ impl Error {
         | ErrorReason::UsernameInUse
         | ErrorReason::UserNotRegistered
         | ErrorReason::ServerOverloaded
-        | ErrorReason::ResourceConflict
+        | ErrorReason::ResourceLimitReached
         | ErrorReason::ResponseTooLarge
     )
   }
