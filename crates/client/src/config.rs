@@ -113,6 +113,9 @@ impl From<C2sConfig> for Config {
 #[derive(Clone, Debug)]
 pub struct C2sSessionExtraInfo {
   pub nid: Nid,
+
+  /// Maximum number of persisted messages per channel allowed by the server.
+  pub max_persist_messages: u32,
 }
 
 /// S2M client configuration.

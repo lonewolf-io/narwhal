@@ -318,6 +318,10 @@ impl C2sDispatcherInner {
           max_message_size: config.limits.max_message_size,
           max_payload_size: config.limits.max_payload_size,
           max_inflight_requests: config.limits.max_inflight_requests,
+          max_persist_messages: match config.limits.max_persist_messages {
+            0 => None,
+            v => Some(v),
+          },
         });
 
         self.transmitter.send_message(reply_msg);
@@ -777,6 +781,7 @@ impl C2sDispatcherInner {
 
       channel_config.max_clients = params.max_clients;
       channel_config.max_payload_size = params.max_payload_size;
+      channel_config.max_persist_messages = params.max_persist_messages;
     }
     let nid = self.nid.as_ref().unwrap().clone();
     let transmitter = self.transmitter.clone();

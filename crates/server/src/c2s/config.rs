@@ -170,6 +170,10 @@ pub struct Limits {
   /// The maximum number of bytes that can be sent per second.
   #[serde(default = "default_rate_limit")]
   pub rate_limit: u32,
+
+  /// The maximum number of persisted messages per channel.
+  #[serde(default = "default_max_persist_messages")]
+  pub max_persist_messages: u32,
 }
 
 fn default_max_connections() -> u32 {
@@ -212,6 +216,10 @@ fn default_payload_pool_memory_budget() -> u64 {
   256 * 1024 * 1024 // 256MB
 }
 
+fn default_max_persist_messages() -> u32 {
+  100
+}
+
 impl Default for Limits {
   fn default() -> Self {
     Self {
@@ -225,6 +233,7 @@ impl Default for Limits {
       outbound_message_queue_size: default_outbound_message_queue_size(),
       rate_limit: default_rate_limit(),
       payload_pool_memory_budget: default_payload_pool_memory_budget(),
+      max_persist_messages: default_max_persist_messages(),
     }
   }
 }

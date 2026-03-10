@@ -311,10 +311,7 @@ struct ChannelShard {
   notifier: Notifier,
   local_domain: StringAtom,
   total_channels: Arc<AtomicUsize>,
-  max_channels: u32,
-  max_clients_per_channel: u32,
-  max_channels_per_client: u32,
-  max_payload_size: u32,
+  limits: ChannelManagerLimits,
   metrics: ChannelManagerMetrics,
 }
 
@@ -393,7 +390,7 @@ impl ChannelShard {
 
     // Create the channel if it doesn't exist.
     if as_owner {
-      if self.total_channels.load(Ordering::SeqCst) >= self.max_channels as usize {
+      if self.total_channels.load(Ordering::SeqCst) >= self.limits.max_channels as usize {
         self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
         return Err(
           narwhal_protocol::Error::new(ResourceLimitReached)
@@ -403,7 +400,11 @@ impl ChannelShard {
         );
       }
 
-      let config = ChannelConfig { max_clients: self.max_clients_per_channel, max_payload_size: self.max_payload_size };
+      let config = ChannelConfig {
+        max_clients: self.limits.max_clients_per_channel,
+        max_payload_size: self.limits.max_payload_size,
+        max_persist_messages: 0,
+      };
       self.channels.insert(handler.clone(), Channel::new(handler.clone(), config, self.notifier.clone()));
       self.total_channels.fetch_add(1, Ordering::SeqCst);
     }
@@ -458,7 +459,7 @@ impl ChannelShard {
     }
 
     // All channel-level checks passed, now reserve the membership slot.
-    if !self.membership.reserve_slot(&new_member_nid.username, &handler, self.max_channels_per_client).await {
+    if !self.membership.reserve_slot(&new_member_nid.username, &handler, self.limits.max_channels_per_client).await {
       if as_owner {
         self.channels.remove(&handler);
       }
@@ -777,6 +778,7 @@ impl ChannelShard {
       channel: channel_id.into(),
       max_clients: config.max_clients,
       max_payload_size: config.max_payload_size,
+      max_persist_messages: config.max_persist_messages,
     }));
 
     Ok(())
@@ -794,7 +796,7 @@ impl ChannelShard {
       return Err(narwhal_protocol::Error::new(NotAllowed).with_id(correlation_id).into());
     }
 
-    if config.max_clients > self.max_clients_per_channel {
+    if config.max_clients > self.limits.max_clients_per_channel {
       return Err(
         narwhal_protocol::Error::new(BadRequest)
           .with_id(correlation_id)
@@ -803,11 +805,20 @@ impl ChannelShard {
       );
     }
 
-    if config.max_payload_size > self.max_payload_size {
+    if config.max_payload_size > self.limits.max_payload_size {
       return Err(
         narwhal_protocol::Error::new(BadRequest)
           .with_id(correlation_id)
           .with_detail("max_payload_size exceeds server established limit")
+          .into(),
+      );
+    }
+
+    if config.max_persist_messages > self.limits.max_persist_messages {
+      return Err(
+        narwhal_protocol::Error::new(BadRequest)
+          .with_id(correlation_id)
+          .with_detail("max_persist_messages exceeds server established limit")
           .into(),
       );
     }
@@ -932,6 +943,16 @@ impl ChannelShard {
   }
 }
 
+/// Limits for the channel manager.
+#[derive(Clone, Debug)]
+pub struct ChannelManagerLimits {
+  pub max_channels: u32,
+  pub max_clients_per_channel: u32,
+  pub max_channels_per_client: u32,
+  pub max_payload_size: u32,
+  pub max_persist_messages: u32,
+}
+
 /// The channel manager.
 #[derive(Clone)]
 pub struct ChannelManager {
@@ -940,10 +961,7 @@ pub struct ChannelManager {
   router: GlobalRouter,
   notifier: Notifier,
   total_channels: Arc<AtomicUsize>,
-  max_channels: u32,
-  max_clients_per_channel: u32,
-  max_channels_per_client: u32,
-  max_payload_size: u32,
+  limits: ChannelManagerLimits,
   metrics: ChannelManagerMetrics,
   mailbox_capacity: usize,
 }
@@ -958,25 +976,14 @@ impl std::fmt::Debug for ChannelManager {
 
 impl ChannelManager {
   /// Creates a new channel manager with the specified configuration.
-  pub fn new(
-    router: GlobalRouter,
-    notifier: Notifier,
-    max_channels: u32,
-    max_clients_per_channel: u32,
-    max_channels_per_client: u32,
-    max_payload_size: u32,
-    registry: &mut Registry,
-  ) -> Self {
+  pub fn new(router: GlobalRouter, notifier: Notifier, limits: ChannelManagerLimits, registry: &mut Registry) -> Self {
     Self {
       mailboxes: Arc::from([]),
       membership: Membership::new(),
       router,
       notifier,
       total_channels: Arc::new(AtomicUsize::new(0)),
-      max_channels,
-      max_clients_per_channel,
-      max_channels_per_client,
-      max_payload_size,
+      limits,
       metrics: ChannelManagerMetrics::register(registry),
       mailbox_capacity: DEFAULT_MAILBOX_CAPACITY,
     }
@@ -1002,10 +1009,7 @@ impl ChannelManager {
         notifier: self.notifier.clone(),
         local_domain: local_domain.clone(),
         total_channels: self.total_channels.clone(),
-        max_channels: self.max_channels,
-        max_clients_per_channel: self.max_clients_per_channel,
-        max_channels_per_client: self.max_channels_per_client,
-        max_payload_size: self.max_payload_size,
+        limits: self.limits.clone(),
         metrics: self.metrics.clone(),
       };
 
@@ -1466,6 +1470,7 @@ impl ChannelAcl {
 pub struct ChannelConfig {
   pub max_clients: u32,
   pub max_payload_size: u32,
+  pub max_persist_messages: u32,
 }
 
 // === impl ChannelConfig ===
@@ -1478,6 +1483,9 @@ impl ChannelConfig {
     }
     if other.max_payload_size > 0 {
       config.max_payload_size = other.max_payload_size;
+    }
+    if other.max_persist_messages > 0 {
+      config.max_persist_messages = other.max_persist_messages;
     }
     config
   }

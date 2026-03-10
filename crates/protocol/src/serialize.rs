@@ -249,8 +249,9 @@ mod tests {
                     channel: "!1@localhost".into(),
                     max_clients: 100,
                     max_payload_size: 16,
+                    ..Default::default()
                 }),
-                expected_out: Some("CHAN_CONFIG id=1 channel=!1@localhost max_clients=100 max_payload_size=16\n".to_string()),
+                expected_out: Some("CHAN_CONFIG id=1 channel=!1@localhost max_clients=100 max_payload_size=16 max_persist_messages=0\n".to_string()),
             },
             TestCase {
                 name: "CONNECT",
@@ -259,7 +260,7 @@ mod tests {
             },
             TestCase {
                 name: "CONNECT_ACK",
-                msg: Message::ConnectAck(ConnectAckParameters { auth_required: true, application_protocol: Some("NCP/1.0".into()), max_inflight_requests: 100, heartbeat_interval: 20000, max_message_size: 8192, max_payload_size: 262144, max_subscriptions: 100 }),
+                msg: Message::ConnectAck(ConnectAckParameters { auth_required: true, application_protocol: Some("NCP/1.0".into()), max_inflight_requests: 100, heartbeat_interval: 20000, max_message_size: 8192, max_payload_size: 262144, max_subscriptions: 100, ..Default::default() }),
                 expected_out: Some(
                     "CONNECT_ACK application_protocol=NCP/1.0 auth_required=true heartbeat_interval=20000 max_inflight_requests=100 max_message_size=8192 max_payload_size=262144 max_subscriptions=100\n".to_string(),
                 ),
@@ -451,9 +452,10 @@ mod tests {
                     channel: "!1@localhost".into(),
                     max_clients: 100,
                     max_payload_size: 16,
+                    ..Default::default()
                     }
                 ),
-                expected_out: Some("SET_CHAN_CONFIG id=1 channel=!1@localhost max_clients=100 max_payload_size=16\n".to_string()),
+                expected_out: Some("SET_CHAN_CONFIG id=1 channel=!1@localhost max_clients=100 max_payload_size=16 max_persist_messages=0\n".to_string()),
             },
         ];
 

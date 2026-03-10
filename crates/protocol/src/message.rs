@@ -151,6 +151,7 @@ pub struct ChannelConfigurationParameters {
 
   pub max_clients: u32,
   pub max_payload_size: u32,
+  pub max_persist_messages: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
@@ -170,6 +171,7 @@ pub struct ConnectAckParameters {
   pub max_message_size: u32,
   pub max_payload_size: u32,
   pub max_inflight_requests: u32,
+  pub max_persist_messages: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
@@ -511,6 +513,7 @@ pub struct SetChannelConfigurationParameters {
 
   pub max_clients: u32,
   pub max_payload_size: u32,
+  pub max_persist_messages: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]

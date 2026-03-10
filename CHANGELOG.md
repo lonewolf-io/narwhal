@@ -4,6 +4,7 @@ All notable changes to Narwhal will be documented in this file.
 
 ## Unreleased
 
+* [ENHANCEMENT]: Add `max_persist_messages` channel configuration parameter. [#184](https://github.com/narwhal-io/narwhal/pull/184)
 * [ENHANCEMENT]: Add Prometheus metrics support. [#175](https://github.com/narwhal-io/narwhal/pull/175)
 * [ENHANCEMENT]: Extract thread and runtime management into a shared `CoreDispatcher`. [#172](https://github.com/narwhal-io/narwhal/pull/172)
 

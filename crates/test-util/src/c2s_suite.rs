@@ -19,7 +19,7 @@ use narwhal_protocol::{
   LeaveChannelParameters, Message, SetChannelAclParameters, SetChannelConfigurationParameters,
 };
 use narwhal_server::c2s;
-use narwhal_server::channel::ChannelManager;
+use narwhal_server::channel::{ChannelManager, ChannelManagerLimits};
 use narwhal_server::notifier::Notifier;
 use narwhal_server::router::GlobalRouter;
 use narwhal_util::string_atom::StringAtom;
@@ -88,22 +88,17 @@ impl C2sSuite {
 
     let notifier = Notifier::new(global_router.clone(), modulator.clone());
 
-    let max_channels = arc_config.limits.max_channels;
-    let max_clients_per_channel = arc_config.limits.max_clients_per_channel;
-    let max_channels_per_client = arc_config.limits.max_channels_per_client;
-    let max_payload_size = arc_config.limits.max_payload_size;
+    let channel_limits = ChannelManagerLimits {
+      max_channels: arc_config.limits.max_channels,
+      max_clients_per_channel: arc_config.limits.max_clients_per_channel,
+      max_channels_per_client: arc_config.limits.max_channels_per_client,
+      max_payload_size: arc_config.limits.max_payload_size,
+      max_persist_messages: arc_config.limits.max_persist_messages,
+    };
 
     let mut registry = Registry::default();
 
-    let mut channel_mng = ChannelManager::new(
-      global_router,
-      notifier,
-      max_channels,
-      max_clients_per_channel,
-      max_channels_per_client,
-      max_payload_size,
-      &mut registry,
-    );
+    let mut channel_mng = ChannelManager::new(global_router, notifier, channel_limits, &mut registry);
     channel_mng.bootstrap(&core_dispatcher).await?;
 
     let conn_cfg = narwhal_common::conn::Config {
@@ -277,6 +272,7 @@ impl C2sSuite {
           channel: StringAtom::from(channel),
           max_clients,
           max_payload_size,
+          ..Default::default()
         }),
       )
       .await?;

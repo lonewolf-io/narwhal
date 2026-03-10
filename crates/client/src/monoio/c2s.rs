@@ -59,7 +59,7 @@ impl Handshaker<TlsStream> for C2sHandshaker {
 
     let connect_ack_msg = common::request(connect_msg, stream, message_buff).await?;
 
-    let (auth_required, session_info) = match connect_ack_msg {
+    let (auth_required, max_persist_messages, session_info) = match connect_ack_msg {
       Message::ConnectAck(params) => {
         let session_info = SessionInfo {
           heartbeat_interval: params.heartbeat_interval,
@@ -68,7 +68,7 @@ impl Handshaker<TlsStream> for C2sHandshaker {
           max_payload_size: params.max_payload_size,
         };
 
-        (params.auth_required, session_info)
+        (params.auth_required, params.max_persist_messages, session_info)
       },
       Message::Error(err) => {
         return Err(anyhow!("connection rejected: {:?}", err.reason));
@@ -130,7 +130,7 @@ impl Handshaker<TlsStream> for C2sHandshaker {
       return Err(anyhow!("no proper authentication method provided"));
     }
 
-    Ok((session_info, C2sSessionExtraInfo { nid }))
+    Ok((session_info, C2sSessionExtraInfo { nid, max_persist_messages: max_persist_messages.unwrap_or(0) }))
   }
 }
 
@@ -325,6 +325,7 @@ impl C2sClient {
     channel: StringAtom,
     max_clients: u32,
     max_payload_size: u32,
+    max_persist_messages: u32,
   ) -> crate::Result<()> {
     use narwhal_protocol::SetChannelConfigurationParameters;
 
@@ -334,6 +335,7 @@ impl C2sClient {
       channel,
       max_clients,
       max_payload_size,
+      max_persist_messages,
     });
 
     let handle = self.client.send_message(message, None).await?;

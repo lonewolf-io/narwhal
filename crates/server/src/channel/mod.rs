@@ -3,4 +3,4 @@
 mod manager;
 pub(crate) mod membership;
 
-pub use manager::{ChannelAcl, ChannelConfig, ChannelManager};
+pub use manager::{ChannelAcl, ChannelConfig, ChannelManager, ChannelManagerLimits};

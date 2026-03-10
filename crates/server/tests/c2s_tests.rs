@@ -1058,6 +1058,7 @@ async fn test_c2s_channel_configuration() -> anyhow::Result<()> {
         channel: StringAtom::from("!test1@localhost"),
         max_clients: 25,
         max_payload_size: 8192,
+        ..Default::default()
       }),
     )
     .await?;
@@ -1079,6 +1080,7 @@ async fn test_c2s_channel_configuration() -> anyhow::Result<()> {
         channel: StringAtom::from("!test1@localhost"),
         max_clients: 25,
         max_payload_size: 8192,
+        ..Default::default()
       }),
     )
     .await?;
@@ -1115,6 +1117,7 @@ async fn test_c2s_unauthorized_channel_configuration() -> anyhow::Result<()> {
         channel: StringAtom::from("!test1@localhost"),
         max_clients: 25,
         max_payload_size: 8192,
+        ..Default::default()
       }),
     )
     .await?;
@@ -1151,6 +1154,7 @@ async fn test_c2s_channel_max_clients_configuration_limit() -> anyhow::Result<()
         channel: StringAtom::from("!test1@localhost"),
         max_clients: 200,
         max_payload_size: 8192,
+        ..Default::default()
       }),
     )
     .await?;
@@ -1191,6 +1195,7 @@ async fn test_c2s_channel_max_payload_configuration_limit() -> anyhow::Result<()
         channel: StringAtom::from("!test1@localhost"),
         max_clients: 25,
         max_payload_size: 1_000 * 1024,
+        ..Default::default()
       }),
     )
     .await?;
@@ -1203,6 +1208,46 @@ async fn test_c2s_channel_max_payload_configuration_limit() -> anyhow::Result<()
       id: Some(1234),
       reason: narwhal_protocol::ErrorReason::BadRequest.into(),
       detail: Some(StringAtom::from("max_payload_size exceeds server established limit")),
+    }
+  );
+
+  suite.teardown().await?;
+
+  Ok(())
+}
+
+#[monoio::test(enable_timer = true)]
+async fn test_c2s_channel_max_persist_messages_configuration_limit() -> anyhow::Result<()> {
+  let mut suite = C2sSuite::new(default_c2s_config()).await?;
+  suite.setup().await?;
+
+  // Identify users.
+  suite.identify(TEST_USER_1).await?;
+
+  // Create a channel.
+  suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
+
+  // Set max_persist_messages above the server limit (default: 100).
+  suite
+    .write_message(
+      TEST_USER_1,
+      Message::SetChannelConfiguration(SetChannelConfigurationParameters {
+        id: 1234,
+        channel: StringAtom::from("!test1@localhost"),
+        max_persist_messages: 200,
+        ..Default::default()
+      }),
+    )
+    .await?;
+
+  // Verify that the server sent the proper error message.
+  assert_message!(
+    suite.read_message(TEST_USER_1).await?,
+    Message::Error,
+    ErrorParameters {
+      id: Some(1234),
+      reason: narwhal_protocol::ErrorReason::BadRequest.into(),
+      detail: Some(StringAtom::from("max_persist_messages exceeds server established limit")),
     }
   );
 
