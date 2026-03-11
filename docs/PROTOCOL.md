@@ -366,10 +366,11 @@ Acknowledges a connection request and provides server capabilities.
 - `max_message_size` (u32, required): Maximum size of a message in bytes
 - `max_payload_size` (u32, required): Maximum size of a payload in bytes
 - `max_inflight_requests` (u32, required): Maximum number of concurrent requests
+- `max_persist_messages` (u32, optional): Maximum number of persisted messages per channel allowed by the server. Absent when persistence is not supported (i.e. server limit is 0).
 
 **Example**:
 ```
-CONNECT_ACK auth_required=true heartbeat_interval=30000 max_subscriptions=100 max_message_size=4096 max_payload_size=1048576 max_inflight_requests=10
+CONNECT_ACK auth_required=true heartbeat_interval=30000 max_subscriptions=100 max_message_size=4096 max_payload_size=1048576 max_inflight_requests=10 max_persist_messages=100
 ```
 
 ---
@@ -870,29 +871,33 @@ Returns the configuration for a channel.
 - `channel` (string, required): Channel ID (must be non-empty)
 - `max_clients` (u32, required): Maximum number of clients allowed in the channel
 - `max_payload_size` (u32, required): Maximum payload size in bytes
+- `max_persist_messages` (u32, required): Maximum number of messages to persist for this channel (0 = no limit configured)
+- `persist` (bool, required): Whether message persistence is enabled for this channel
 
 **Example**:
 ```
-CHAN_CONFIG id=9 channel=!42@example.com max_clients=100 max_payload_size=1048576
+CHAN_CONFIG id=9 channel=!42@example.com max_clients=100 max_payload_size=1048576 max_persist_messages=50 persist=true
 ```
 
 ---
 
 ### SET_CHAN_CONFIG
 
-Sets the configuration for a channel.
+Sets the configuration for a channel. Only the channel owner can modify configuration. All configuration parameters are optional — only the fields present in the message are updated; absent fields retain their current values.
 
 **Direction**: Client → Server
 
 **Parameters**:
 - `id` (u32, required): Request identifier (must be non-zero)
 - `channel` (string, required): Channel ID to modify (must be non-empty)
-- `max_clients` (u32, required): Maximum number of clients allowed in the channel
-- `max_payload_size` (u32, required): Maximum payload size in bytes
+- `max_clients` (u32, optional): Maximum number of clients allowed in the channel
+- `max_payload_size` (u32, optional): Maximum payload size in bytes
+- `max_persist_messages` (u32, optional): Maximum number of messages to persist for this channel
+- `persist` (bool, optional): Whether message persistence is enabled for this channel
 
 **Example**:
 ```
-SET_CHAN_CONFIG id=10 channel=!42@example.com max_clients=200 max_payload_size=2097152
+SET_CHAN_CONFIG id=10 channel=!42@example.com max_clients=200 max_payload_size=2097152 persist=true
 ```
 
 **Response**: [SET_CHAN_CONFIG_ACK](#set_chan_config_ack) or [ERROR](#error)
