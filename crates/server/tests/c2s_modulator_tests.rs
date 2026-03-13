@@ -16,7 +16,7 @@ use narwhal_protocol::EventKind::{MemberJoined, MemberLeft};
 use narwhal_protocol::{
   AuthAckParameters, AuthParameters, BroadcastAckParameters, BroadcastParameters, ConnectParameters, ErrorParameters,
   Event, EventParameters, JoinChannelParameters, ListChannelsParameters, Message, ModDirectAckParameters,
-  ModDirectParameters,
+  ModDirectParameters, SetChannelConfigurationParameters,
 };
 use narwhal_test_util::{
   C2sSuite, TestModulator, assert_message, default_c2s_config, default_m2s_config, default_s2m_config,
@@ -819,6 +819,100 @@ async fn test_c2s_modulator_channel_survives_single_connection_drop() -> anyhow:
     assert_eq!(params.id, 5678);
     assert!(params.channels.contains(&channel_id), "user should still be a member of the channel");
   }
+
+  suite.teardown().await?;
+  s2m_ln.shutdown().await?;
+  core_dispatcher.shutdown().await?;
+
+  Ok(())
+}
+
+#[monoio::test(enable_timer = true)]
+async fn test_c2s_channel_persist_not_allowed_for_identified_users() -> anyhow::Result<()> {
+  let mut suite = C2sSuite::default().await?;
+  suite.setup().await?;
+
+  suite.identify("alice").await?;
+  suite.join_channel("alice", "!test@localhost", None).await?;
+
+  suite
+    .write_message(
+      "alice",
+      Message::SetChannelConfiguration(SetChannelConfigurationParameters {
+        id: 1234,
+        channel: StringAtom::from("!test@localhost"),
+        persist: Some(true),
+        ..Default::default()
+      }),
+    )
+    .await?;
+
+  assert_message!(
+    suite.read_message("alice").await?,
+    Message::Error,
+    ErrorParameters {
+      id: Some(1234),
+      reason: StringAtom::from("FORBIDDEN"),
+      detail: Some(StringAtom::from("persistence requires auth"))
+    }
+  );
+
+  suite.teardown().await?;
+  Ok(())
+}
+
+#[monoio::test(enable_timer = true)]
+async fn test_c2s_channel_persist_allowed_for_authenticated_users() -> anyhow::Result<()> {
+  let modulator = TestModulator::new()
+    .with_auth_handler(|_| async { Ok(AuthResult::Success { username: StringAtom::from("alice") }) });
+
+  let mut core_dispatcher = CoreDispatcher::new(1);
+  core_dispatcher.bootstrap().await?;
+
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
+  s2m_ln.bootstrap().await?;
+
+  let s2m_client = S2mClient::new(S2mConfig {
+    address: s2m_ln.local_address().unwrap().to_string(),
+    shared_secret: SHARED_SECRET.to_string(),
+    ..Default::default()
+  })?;
+
+  let mut suite = C2sSuite::with_modulator(default_c2s_config(), Some(s2m_client), None).await?;
+  suite.setup().await?;
+
+  let mut conn = suite.tls_socket_connect().await?;
+
+  conn.write_message(Message::Connect(ConnectParameters { protocol_version: 1, heartbeat_interval: 0 })).await?;
+  assert!(matches!(conn.read_message().await?, Message::ConnectAck { .. }));
+
+  conn.write_message(Message::Auth(AuthParameters { token: StringAtom::from("token") })).await?;
+  assert!(matches!(conn.read_message().await?, Message::AuthAck { .. }));
+
+  conn
+    .write_message(Message::JoinChannel(JoinChannelParameters {
+      id: 1,
+      channel: "!test@localhost".into(),
+      on_behalf: None,
+    }))
+    .await?;
+  assert!(matches!(conn.read_message().await?, Message::JoinChannelAck { .. }));
+
+  conn
+    .write_message(Message::SetChannelConfiguration(SetChannelConfigurationParameters {
+      id: 1234,
+      channel: StringAtom::from("!test@localhost"),
+      persist: Some(true),
+      ..Default::default()
+    }))
+    .await?;
+  assert!(matches!(conn.read_message().await?, Message::SetChannelConfigurationAck { .. }));
 
   suite.teardown().await?;
   s2m_ln.shutdown().await?;

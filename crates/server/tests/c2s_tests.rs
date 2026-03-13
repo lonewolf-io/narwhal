@@ -1268,7 +1268,7 @@ async fn test_c2s_channel_persist_configuration() -> anyhow::Result<()> {
   // Create a channel.
   suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
 
-  // Set persist to true.
+  // Setting persist=true is not allowed without authentication (requires modulator).
   suite
     .write_message(
       TEST_USER_1,
@@ -1283,30 +1283,15 @@ async fn test_c2s_channel_persist_configuration() -> anyhow::Result<()> {
 
   assert_message!(
     suite.read_message(TEST_USER_1).await?,
-    Message::SetChannelConfigurationAck,
-    SetChannelConfigurationAckParameters { id: 1234 }
+    Message::Error,
+    ErrorParameters {
+      id: Some(1234),
+      reason: StringAtom::from("FORBIDDEN"),
+      detail: Some(StringAtom::from("persistence requires auth"))
+    }
   );
 
-  // Verify persist is true via GET.
-  suite
-    .write_message(
-      TEST_USER_1,
-      Message::GetChannelConfiguration(GetChannelConfigurationParameters {
-        id: 1235,
-        channel: StringAtom::from("!test1@localhost"),
-      }),
-    )
-    .await?;
-
-  let reply = suite.read_message(TEST_USER_1).await?;
-  if let Message::ChannelConfiguration(params) = reply {
-    assert_eq!(params.id, 1235);
-    assert!(params.persist);
-  } else {
-    panic!("expected ChannelConfiguration response");
-  }
-
-  // Set persist back to false.
+  // Set persist to false (always allowed).
   suite
     .write_message(
       TEST_USER_1,

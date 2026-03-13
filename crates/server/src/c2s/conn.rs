@@ -20,7 +20,7 @@ use narwhal_modulator::modulator::{
   SendPrivatePayloadRequest, SendPrivatePayloadResult,
 };
 use narwhal_protocol::ErrorReason::{
-  BadRequest, InternalServerError, UnexpectedMessage, UnsupportedProtocolVersion, UsernameInUse,
+  BadRequest, Forbidden, InternalServerError, UnexpectedMessage, UnsupportedProtocolVersion, UsernameInUse,
 };
 use narwhal_protocol::{
   AclAction, AclType, AuthAckParameters, ConnectAckParameters, IdentifyAckParameters, Message, ModDirectAckParameters,
@@ -784,6 +784,13 @@ impl C2sDispatcherInner {
         persist: params.persist,
       };
     }
+
+    if channel_config.persist == Some(true) && !self.auth_required {
+      return Err(
+        narwhal_protocol::Error::new(Forbidden).with_id(correlation_id).with_detail("persistence requires auth").into(),
+      );
+    }
+
     let nid = self.nid.as_ref().unwrap().clone();
     let transmitter = self.transmitter.clone();
 
