@@ -4,8 +4,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use narwhal_protocol::Nid;
-use narwhal_util::pool::{BucketedPool, PoolBuffer};
+use monoio::io::AsyncWriteRent;
+use narwhal_protocol::{Message, Nid};
+use narwhal_util::pool::PoolBuffer;
 use narwhal_util::string_atom::StringAtom;
 
 use super::manager::{ChannelAcl, ChannelConfig};
@@ -18,14 +19,6 @@ pub struct PersistedChannel {
   pub acl: ChannelAcl,
   pub members: HashSet<Nid>,
   pub seq: u64,
-}
-
-/// A persisted broadcast message.
-pub struct PersistedMessage {
-  pub from: Nid,
-  pub seq: u64,
-  pub timestamp: u64,
-  pub payload: PoolBuffer,
 }
 
 /// Storage backend for persisting channel metadata.
@@ -49,10 +42,10 @@ pub trait ChannelStore: Send + Sync + 'static {
 /// Append-only log for persisting broadcast messages for a single channel.
 #[async_trait(?Send)]
 pub trait MessageLog {
-  /// Appends a broadcast message to the log, buffering it in memory without flushing to disk.
-  /// When the number of stored messages exceeds `max_messages`, the oldest entries are evicted.
+  /// Appends a message to the log, buffering it in memory without flushing to disk.
+  /// When the number of stored messages exceeds `max_messages`, the oldest entries should be evicted.
   /// Call `flush` to persist buffered writes to durable storage.
-  async fn append(&self, message: &PersistedMessage, max_messages: u32) -> anyhow::Result<()>;
+  async fn append(&self, message: &Message, payload: &PoolBuffer, max_messages: u32) -> anyhow::Result<()>;
 
   /// Removes all persisted messages.
   async fn delete(&self) -> anyhow::Result<()>;
@@ -60,11 +53,10 @@ pub trait MessageLog {
   /// Flushes any buffered writes to durable storage.
   async fn flush(&self) -> anyhow::Result<()>;
 
-  /// Returns messages with seq > `from_seq`, ordered by seq ascending, up to `limit` entries.
-  async fn get_history(
-    &self,
-    from_seq: u64,
-    limit: u32,
-    pool: &BucketedPool,
-  ) -> anyhow::Result<Arc<[PersistedMessage]>>;
+  /// Streams messages with seq > `from_seq`, ordered by seq ascending, up to `limit` entries,
+  /// writing their wire-format representation directly to the given writer.
+  /// Returns the number of messages written.
+  async fn write_history<W: AsyncWriteRent>(&self, from_seq: u64, limit: u32, writer: &mut W) -> anyhow::Result<u32>
+  where
+    Self: Sized;
 }

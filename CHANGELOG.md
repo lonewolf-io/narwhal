@@ -4,7 +4,7 @@ All notable changes to Narwhal will be documented in this file.
 
 ## Unreleased
 
-* [ENHANCEMENT]: Add channel persistence support. [#184](https://github.com/narwhal-io/narwhal/pull/184), [#185](https://github.com/narwhal-io/narwhal/pull/185), [#191](https://github.com/narwhal-io/narwhal/pull/191)
+* [ENHANCEMENT]: Add channel persistence support. [#184](https://github.com/narwhal-io/narwhal/pull/184), [#185](https://github.com/narwhal-io/narwhal/pull/185), [#191](https://github.com/narwhal-io/narwhal/pull/191), [#192](https://github.com/narwhal-io/narwhal/pull/192)
 * [ENHANCEMENT]: Add Prometheus metrics support. [#175](https://github.com/narwhal-io/narwhal/pull/175)
 * [ENHANCEMENT]: Extract thread and runtime management into a shared `CoreDispatcher`. [#172](https://github.com/narwhal-io/narwhal/pull/172)
 
