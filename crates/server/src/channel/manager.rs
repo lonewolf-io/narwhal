@@ -35,6 +35,7 @@ use crate::router::GlobalRouter;
 use crate::transmitter::{Resource, Transmitter};
 
 use super::membership::Membership;
+use super::store::{ChannelStore, MessageLog, MessageLogFactory};
 
 const DEFAULT_MAILBOX_CAPACITY: usize = 16384;
 
@@ -173,7 +174,7 @@ enum Command {
 }
 
 /// A channel.
-struct Channel {
+struct Channel<ML: MessageLog> {
   handler: StringAtom,
   owner: Option<Nid>,
   config: ChannelConfig,
@@ -182,12 +183,14 @@ struct Channel {
   allowed_targets: Arc<[Nid]>,
   notifier: Notifier,
   seq: u64,
+  #[allow(dead_code)]
+  message_log: ML,
 }
 
 // === impl Channel ===
 
-impl Channel {
-  fn new(handler: StringAtom, config: ChannelConfig, notifier: Notifier) -> Self {
+impl<ML: MessageLog> Channel<ML> {
+  fn new(handler: StringAtom, config: ChannelConfig, notifier: Notifier, message_log: ML) -> Self {
     Self {
       handler,
       owner: None,
@@ -197,6 +200,7 @@ impl Channel {
       allowed_targets: Arc::from([]),
       notifier,
       seq: 1,
+      message_log,
     }
   }
 
@@ -303,8 +307,11 @@ impl Channel {
   }
 }
 
-struct ChannelShard {
-  channels: HashMap<StringAtom, Channel>,
+struct ChannelShard<CS: ChannelStore, MLF: MessageLogFactory> {
+  channels: HashMap<StringAtom, Channel<MLF::Log>>,
+  #[allow(dead_code)]
+  store: CS,
+  message_log_factory: MLF,
   membership: Membership,
   mailbox: Receiver<Command>,
   router: GlobalRouter,
@@ -317,7 +324,7 @@ struct ChannelShard {
 
 // === impl ChannelShard ===
 
-impl ChannelShard {
+impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
   async fn run(mut self) {
     while let Ok(cmd) = self.mailbox.recv().await {
       self.handle(cmd).await;
@@ -406,7 +413,8 @@ impl ChannelShard {
         max_persist_messages: Some(0),
         persist: Some(false),
       };
-      self.channels.insert(handler.clone(), Channel::new(handler.clone(), config, self.notifier.clone()));
+      let message_log = self.message_log_factory.create(&handler);
+      self.channels.insert(handler.clone(), Channel::new(handler.clone(), config, self.notifier.clone(), message_log));
       self.total_channels.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -962,8 +970,9 @@ pub struct ChannelManagerLimits {
 }
 
 /// The channel manager.
-#[derive(Clone)]
-pub struct ChannelManager {
+pub struct ChannelManager<CS: ChannelStore, MLF: MessageLogFactory> {
+  store: CS,
+  message_log_factory: MLF,
   mailboxes: Arc<[Sender<Command>]>,
   membership: Membership,
   router: GlobalRouter,
@@ -974,7 +983,24 @@ pub struct ChannelManager {
   mailbox_capacity: usize,
 }
 
-impl std::fmt::Debug for ChannelManager {
+impl<CS: ChannelStore, MLF: MessageLogFactory> Clone for ChannelManager<CS, MLF> {
+  fn clone(&self) -> Self {
+    Self {
+      store: self.store.clone(),
+      message_log_factory: self.message_log_factory.clone(),
+      mailboxes: self.mailboxes.clone(),
+      membership: self.membership.clone(),
+      router: self.router.clone(),
+      notifier: self.notifier.clone(),
+      total_channels: self.total_channels.clone(),
+      limits: self.limits.clone(),
+      metrics: self.metrics.clone(),
+      mailbox_capacity: self.mailbox_capacity,
+    }
+  }
+}
+
+impl<CS: ChannelStore, MLF: MessageLogFactory> std::fmt::Debug for ChannelManager<CS, MLF> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("ChannelManager").finish_non_exhaustive()
   }
@@ -982,10 +1008,19 @@ impl std::fmt::Debug for ChannelManager {
 
 // === impl ChannelManager ===
 
-impl ChannelManager {
+impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
   /// Creates a new channel manager with the specified configuration.
-  pub fn new(router: GlobalRouter, notifier: Notifier, limits: ChannelManagerLimits, registry: &mut Registry) -> Self {
+  pub fn new(
+    router: GlobalRouter,
+    notifier: Notifier,
+    limits: ChannelManagerLimits,
+    store: CS,
+    message_log_factory: MLF,
+    registry: &mut Registry,
+  ) -> Self {
     Self {
+      store,
+      message_log_factory,
       mailboxes: Arc::from([]),
       membership: Membership::new(),
       router,
@@ -1011,6 +1046,8 @@ impl ChannelManager {
 
       let shard = ChannelShard {
         channels: HashMap::new(),
+        store: self.store.clone(),
+        message_log_factory: self.message_log_factory.clone(),
         membership: self.membership.clone(),
         mailbox: rx,
         router: self.router.clone(),

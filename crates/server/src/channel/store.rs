@@ -23,7 +23,7 @@ pub struct PersistedChannel {
 
 /// Storage backend for persisting channel metadata.
 #[async_trait(?Send)]
-pub trait ChannelStore: Send + Sync + 'static {
+pub trait ChannelStore: Clone + Send + Sync + 'static {
   /// Persists channel metadata.
   /// Called on channel creation (when persist=true) and on any metadata update.
   async fn save_channel(&self, channel: &PersistedChannel) -> anyhow::Result<()>;
@@ -40,7 +40,7 @@ pub trait ChannelStore: Send + Sync + 'static {
 }
 
 /// Factory for creating per-channel message logs.
-pub trait MessageLogFactory: Send + Sync + 'static {
+pub trait MessageLogFactory: Clone + Send + Sync + 'static {
   /// The message log type produced by this factory.
   type Log: MessageLog;
 
@@ -50,7 +50,7 @@ pub trait MessageLogFactory: Send + Sync + 'static {
 
 /// Append-only log for persisting broadcast messages for a single channel.
 #[async_trait(?Send)]
-pub trait MessageLog {
+pub trait MessageLog: Send + 'static {
   /// Appends a message to the log, buffering it in memory without flushing to disk.
   /// When the number of stored messages exceeds `max_messages`, the oldest entries should be evicted.
   /// Call `flush` to persist buffered writes to durable storage.
@@ -68,4 +68,70 @@ pub trait MessageLog {
   async fn write_history<W: AsyncWriteRent>(&self, from_seq: u64, limit: u32, writer: &mut W) -> anyhow::Result<u32>
   where
     Self: Sized;
+}
+
+/// A no-op channel store that discards all writes and returns empty results.
+#[derive(Clone)]
+pub struct NoopChannelStore;
+
+// === impl NoopChannelStore ===
+
+#[async_trait(?Send)]
+impl ChannelStore for NoopChannelStore {
+  async fn save_channel(&self, _channel: &PersistedChannel) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  async fn delete_channel(&self, _handler: &StringAtom) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  async fn load_channel_handlers(&self) -> anyhow::Result<Arc<[StringAtom]>> {
+    Ok(Arc::from([]))
+  }
+
+  async fn load_channel(&self, _handler: &StringAtom) -> anyhow::Result<PersistedChannel> {
+    unimplemented!()
+  }
+}
+
+/// A no-op message log that discards all writes and returns empty results.
+pub struct NoopMessageLog;
+
+// === impl NoopMessageLog ===
+
+#[async_trait(?Send)]
+impl MessageLog for NoopMessageLog {
+  async fn append(&self, _message: &Message, _payload: &PoolBuffer, _max_messages: u32) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  async fn delete(&self) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  async fn flush(&self) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  async fn write_history<W: AsyncWriteRent>(&self, _from_seq: u64, _limit: u32, _writer: &mut W) -> anyhow::Result<u32>
+  where
+    Self: Sized,
+  {
+    Ok(0)
+  }
+}
+
+/// A no-op message log factory that produces `NoopMessageLog` instances.
+#[derive(Clone)]
+pub struct NoopMessageLogFactory;
+
+// === impl NoopMessageLogFactory ===
+
+impl MessageLogFactory for NoopMessageLogFactory {
+  type Log = NoopMessageLog;
+
+  fn create(&self, _handler: &StringAtom) -> NoopMessageLog {
+    NoopMessageLog
+  }
 }

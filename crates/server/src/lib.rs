@@ -14,7 +14,7 @@ use std::env;
 use std::fs;
 use std::sync::Arc;
 
-use crate::channel::ChannelManager;
+use crate::channel::{ChannelManager, NoopChannelStore, NoopMessageLogFactory};
 use crate::notifier::Notifier;
 use crate::router::GlobalRouter;
 use crate::telemetry::MetricsRegistry;
@@ -112,7 +112,14 @@ async fn run_server(
 
   let channel_reg = guard.sub_registry_with_prefix("narwhal");
 
-  let mut channel_mng = ChannelManager::new(global_router.clone(), notifier.clone(), channel_limits, channel_reg);
+  let mut channel_mng = ChannelManager::new(
+    global_router.clone(),
+    notifier.clone(),
+    channel_limits,
+    NoopChannelStore,
+    NoopMessageLogFactory,
+    channel_reg,
+  );
   channel_mng.bootstrap(&core_dispatcher).await?;
 
   let c2s_reg = guard.sub_registry_with_prefix("narwhal_c2s");

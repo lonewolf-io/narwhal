@@ -30,6 +30,7 @@ use narwhal_util::pool::PoolBuffer;
 use narwhal_util::string_atom::StringAtom;
 
 use crate::c2s::{self, Config};
+use crate::channel::store::{ChannelStore, MessageLogFactory};
 use crate::channel::{ChannelConfig, ChannelManager};
 use crate::transmitter::{Resource, Transmitter};
 
@@ -117,18 +118,18 @@ impl std::fmt::Debug for C2sTransmitter {
   }
 }
 
-pub struct C2sDispatcherFactory {
-  inner: Arc<RwLock<C2sDispatcherFactoryInner>>,
+pub struct C2sDispatcherFactory<CS: ChannelStore, MLF: MessageLogFactory> {
+  inner: Arc<RwLock<C2sDispatcherFactoryInner<CS, MLF>>>,
   metrics: C2sDispatcherMetrics,
 }
 
-impl Clone for C2sDispatcherFactory {
+impl<CS: ChannelStore, MLF: MessageLogFactory> Clone for C2sDispatcherFactory<CS, MLF> {
   fn clone(&self) -> Self {
     Self { inner: self.inner.clone(), metrics: self.metrics.clone() }
   }
 }
 
-impl std::fmt::Debug for C2sDispatcherFactory {
+impl<CS: ChannelStore, MLF: MessageLogFactory> std::fmt::Debug for C2sDispatcherFactory<CS, MLF> {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     f.debug_struct("C2sDispatcherFactory").finish_non_exhaustive()
   }
@@ -136,11 +137,11 @@ impl std::fmt::Debug for C2sDispatcherFactory {
 
 // === impl C2sDispatcherFactory ===
 
-impl C2sDispatcherFactory {
+impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherFactory<CS, MLF> {
   /// Creates a new C2S `C2sDispatcherFactory`.
   pub async fn new(
     config: Arc<Config>,
-    channel_manager: ChannelManager,
+    channel_manager: ChannelManager<CS, MLF>,
     c2s_router: c2s::Router,
     modulator: Option<Arc<dyn Modulator>>,
     registry: &mut Registry,
@@ -159,8 +160,10 @@ impl C2sDispatcherFactory {
 }
 
 #[async_trait(?Send)]
-impl narwhal_common::conn::DispatcherFactory<C2sDispatcher> for C2sDispatcherFactory {
-  async fn create(&mut self, handler: usize, tx: ConnTx) -> C2sDispatcher {
+impl<CS: ChannelStore, MLF: MessageLogFactory> narwhal_common::conn::DispatcherFactory<C2sDispatcher<CS, MLF>>
+  for C2sDispatcherFactory<CS, MLF>
+{
+  async fn create(&mut self, handler: usize, tx: ConnTx) -> C2sDispatcher<CS, MLF> {
     let inner = self.inner.read().await;
 
     C2sDispatcher::new(
@@ -184,13 +187,12 @@ impl narwhal_common::conn::DispatcherFactory<C2sDispatcher> for C2sDispatcherFac
   }
 }
 
-#[derive(Clone, Debug)]
-pub struct C2sDispatcherFactoryInner {
+pub struct C2sDispatcherFactoryInner<CS: ChannelStore, MLF: MessageLogFactory> {
   /// The C2S configuration.
   config: Arc<Config>,
 
   /// The channel manager.
-  channel_manager: ChannelManager,
+  channel_manager: ChannelManager<CS, MLF>,
 
   /// The C2S router.
   c2s_router: c2s::Router,
@@ -202,12 +204,23 @@ pub struct C2sDispatcherFactoryInner {
   auth_required: bool,
 }
 
-#[derive(Debug, Default)]
-pub struct C2sDispatcher(Option<C2sDispatcherInner>);
+pub struct C2sDispatcher<CS: ChannelStore, MLF: MessageLogFactory>(Option<C2sDispatcherInner<CS, MLF>>);
+
+impl<CS: ChannelStore, MLF: MessageLogFactory> Default for C2sDispatcher<CS, MLF> {
+  fn default() -> Self {
+    Self(None)
+  }
+}
+
+impl<CS: ChannelStore, MLF: MessageLogFactory> std::fmt::Debug for C2sDispatcher<CS, MLF> {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("C2sDispatcher").finish_non_exhaustive()
+  }
+}
 
 // === impl C2sDispatcher ===
 
-impl C2sDispatcher {
+impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcher<CS, MLF> {
   /// Initializes the dispatcher with the given parameters.
   #[allow(clippy::too_many_arguments)]
   fn new(
@@ -215,7 +228,7 @@ impl C2sDispatcher {
     config: Arc<Config>,
     auth_required: bool,
     modulator: Option<Arc<dyn Modulator>>,
-    channel_manager: ChannelManager,
+    channel_manager: ChannelManager<CS, MLF>,
     c2s_router: c2s::Router,
     conn_tx: ConnTx,
     metrics: C2sDispatcherMetrics,
@@ -236,8 +249,7 @@ impl C2sDispatcher {
   }
 }
 
-#[derive(Debug)]
-struct C2sDispatcherInner {
+struct C2sDispatcherInner<CS: ChannelStore, MLF: MessageLogFactory> {
   /// C2S configuration.
   config: Arc<Config>,
 
@@ -254,7 +266,7 @@ struct C2sDispatcherInner {
   modulator: Option<Arc<dyn Modulator>>,
 
   /// The channel manager.
-  channel_manager: ChannelManager,
+  channel_manager: ChannelManager<CS, MLF>,
 
   /// The NID assigned to the connection.
   nid: Option<Nid>,
@@ -268,7 +280,7 @@ struct C2sDispatcherInner {
 
 // === impl C2sDispatcherInner ===
 
-impl C2sDispatcherInner {
+impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
   /// Handles the initial connection handshake with a client.
   ///
   /// # Arguments
@@ -1122,7 +1134,7 @@ impl C2sDispatcherInner {
 }
 
 #[async_trait(?Send)]
-impl narwhal_common::conn::Dispatcher for C2sDispatcher {
+impl<CS: ChannelStore, MLF: MessageLogFactory> narwhal_common::conn::Dispatcher for C2sDispatcher<CS, MLF> {
   async fn dispatch_message(
     &mut self,
     msg: Message,

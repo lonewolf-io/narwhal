@@ -19,7 +19,7 @@ use narwhal_protocol::{
   LeaveChannelParameters, Message, SetChannelAclParameters, SetChannelConfigurationParameters,
 };
 use narwhal_server::c2s;
-use narwhal_server::channel::{ChannelManager, ChannelManagerLimits};
+use narwhal_server::channel::{ChannelManager, ChannelManagerLimits, NoopChannelStore, NoopMessageLogFactory};
 use narwhal_server::notifier::Notifier;
 use narwhal_server::router::GlobalRouter;
 use narwhal_util::string_atom::StringAtom;
@@ -35,7 +35,7 @@ pub struct C2sSuite {
   config: Arc<c2s::Config>,
 
   /// The server listener.
-  ln: c2s::C2sListener,
+  ln: c2s::C2sListener<NoopChannelStore, NoopMessageLogFactory>,
 
   /// The runtime dispatcher.
   runtime_dispatcher: CoreDispatcher,
@@ -44,7 +44,7 @@ pub struct C2sSuite {
   local_router: c2s::Router,
 
   /// The channel manager.
-  channel_manager: ChannelManager,
+  channel_manager: ChannelManager<NoopChannelStore, NoopMessageLogFactory>,
 
   /// The M2S payload receiver.
   m2s_payload_rx: Option<async_broadcast::Receiver<OutboundPrivatePayload>>,
@@ -98,7 +98,14 @@ impl C2sSuite {
 
     let mut registry = Registry::default();
 
-    let mut channel_mng = ChannelManager::new(global_router, notifier, channel_limits, &mut registry);
+    let mut channel_mng = ChannelManager::new(
+      global_router,
+      notifier,
+      channel_limits,
+      NoopChannelStore,
+      NoopMessageLogFactory,
+      &mut registry,
+    );
     channel_mng.bootstrap(&core_dispatcher).await?;
 
     let conn_cfg = narwhal_common::conn::Config {

@@ -5,3 +5,4 @@ pub(crate) mod membership;
 pub mod store;
 
 pub use manager::{ChannelAcl, ChannelConfig, ChannelManager, ChannelManagerLimits};
+pub use store::{NoopChannelStore, NoopMessageLog, NoopMessageLogFactory};

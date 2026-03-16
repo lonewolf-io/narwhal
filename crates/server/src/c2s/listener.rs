@@ -20,6 +20,7 @@ use narwhal_common::service::{C2sService, Service};
 
 use crate::c2s::config::ListenerConfig;
 use crate::c2s::conn::{C2sConnRuntime, C2sDispatcherFactory};
+use crate::channel::store::{ChannelStore, MessageLogFactory};
 use crate::util;
 use crate::util::tls::{create_tls_config, generate_self_signed_cert};
 use narwhal_common::core_dispatcher::CoreDispatcher;
@@ -52,7 +53,7 @@ impl Metrics {
 /// The `C2sListener` manages incoming client connections, handling TLS negotiation
 /// and connection management. Accept loops are dispatched to per-core runtimes
 /// via a `CoreDispatcher`.
-pub struct C2sListener {
+pub struct C2sListener<CS: ChannelStore, MLF: MessageLogFactory> {
   /// The configuration for the C2S listener.
   config: ListenerConfig,
 
@@ -60,7 +61,7 @@ pub struct C2sListener {
   conn_rt: C2sConnRuntime,
 
   /// The dispatcher factory.
-  dispatcher_factory: C2sDispatcherFactory,
+  dispatcher_factory: C2sDispatcherFactory<CS, MLF>,
 
   /// The core dispatcher.
   core_dispatcher: CoreDispatcher,
@@ -77,7 +78,7 @@ pub struct C2sListener {
 
 // === impl C2sListener ===
 
-impl C2sListener {
+impl<CS: ChannelStore, MLF: MessageLogFactory> C2sListener<CS, MLF> {
   /// Creates a new C2S listener with the given configuration and connection manager.
   ///
   /// # Arguments
@@ -94,7 +95,7 @@ impl C2sListener {
   pub fn new(
     config: ListenerConfig,
     conn_rt: C2sConnRuntime,
-    dispatcher_factory: C2sDispatcherFactory,
+    dispatcher_factory: C2sDispatcherFactory<CS, MLF>,
     core_dispatcher: CoreDispatcher,
     registry: &mut Registry,
   ) -> Self {
@@ -271,13 +272,13 @@ impl C2sListener {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_accept_loop(
+async fn run_accept_loop<CS: ChannelStore, MLF: MessageLogFactory>(
   worker_id: usize,
   bind_address: SocketAddr,
   pre_created_listener: Option<std::net::TcpListener>,
   tls_config: Arc<ServerConfig>,
   conn_rt: C2sConnRuntime,
-  dispatcher_factory: C2sDispatcherFactory,
+  dispatcher_factory: C2sDispatcherFactory<CS, MLF>,
   ready_tx: async_channel::Sender<()>,
   shutdown_rx: async_channel::Receiver<()>,
   metrics: Metrics,
