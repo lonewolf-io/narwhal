@@ -1208,7 +1208,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
       let membership = self.membership.clone();
       let router = self.router.clone();
       let notifier = self.notifier.clone();
-      let ld = local_domain.clone();
+      let local_domain = local_domain.clone();
       let total_channels = self.total_channels.clone();
       let limits = self.limits.clone();
       let metrics = self.metrics.clone();
@@ -1223,7 +1223,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
             mailbox: rx,
             router,
             notifier,
-            local_domain: ld,
+            local_domain,
             total_channels,
             limits,
             metrics,
