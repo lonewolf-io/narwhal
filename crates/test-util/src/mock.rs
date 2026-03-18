@@ -1,0 +1,110 @@
+// SPDX-License-Identifier: BSD-3-Clause
+
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use async_trait::async_trait;
+use monoio::io::AsyncWriteRent;
+
+use narwhal_protocol::Message;
+use narwhal_server::channel::store::{ChannelStore, MessageLog, MessageLogFactory, PersistedChannel};
+use narwhal_util::pool::PoolBuffer;
+use narwhal_util::string_atom::StringAtom;
+
+/// A channel store that can be toggled to fail on `save_channel`.
+#[derive(Clone, Default)]
+pub struct FailingChannelStore {
+  should_fail: Arc<AtomicBool>,
+}
+
+impl FailingChannelStore {
+  pub fn new() -> Self {
+    Self { should_fail: Arc::new(AtomicBool::new(false)) }
+  }
+
+  /// Sets whether `save_channel` should return an error.
+  pub fn set_fail(&self, fail: bool) {
+    self.should_fail.store(fail, Ordering::SeqCst);
+  }
+}
+
+#[async_trait(?Send)]
+impl ChannelStore for FailingChannelStore {
+  async fn save_channel(&self, _channel: &PersistedChannel) -> anyhow::Result<()> {
+    if self.should_fail.load(Ordering::SeqCst) {
+      return Err(anyhow::anyhow!("injected store failure"));
+    }
+    Ok(())
+  }
+
+  async fn delete_channel(&self, _handler: &StringAtom) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  async fn load_channel_handlers(&self) -> anyhow::Result<Arc<[StringAtom]>> {
+    Ok(Arc::from([]))
+  }
+
+  async fn load_channel(&self, _handler: &StringAtom) -> anyhow::Result<PersistedChannel> {
+    unimplemented!()
+  }
+}
+
+/// A message log that can be toggled to fail on `append`.
+pub struct FailingMessageLog {
+  should_fail: Arc<AtomicBool>,
+}
+
+#[async_trait(?Send)]
+impl MessageLog for FailingMessageLog {
+  async fn append(&self, _message: &Message, _payload: &PoolBuffer, _max_messages: u32) -> anyhow::Result<()> {
+    if self.should_fail.load(Ordering::SeqCst) {
+      return Err(anyhow::anyhow!("injected message log failure"));
+    }
+    Ok(())
+  }
+
+  async fn delete(&self) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  async fn flush(&self) -> anyhow::Result<()> {
+    Ok(())
+  }
+
+  async fn last_seq(&self) -> anyhow::Result<u64> {
+    Ok(0)
+  }
+
+  async fn write_history<W: AsyncWriteRent>(&self, _from_seq: u64, _limit: u32, _writer: &mut W) -> anyhow::Result<u32>
+  where
+    Self: Sized,
+  {
+    Ok(0)
+  }
+}
+
+/// A message log factory that produces `FailingMessageLog` instances sharing a single failure flag.
+#[derive(Clone, Default)]
+pub struct FailingMessageLogFactory {
+  should_fail: Arc<AtomicBool>,
+}
+
+impl FailingMessageLogFactory {
+  pub fn new() -> Self {
+    Self { should_fail: Arc::new(AtomicBool::new(false)) }
+  }
+
+  /// Sets whether `append` on produced logs should return an error.
+  pub fn set_fail(&self, fail: bool) {
+    self.should_fail.store(fail, Ordering::SeqCst);
+  }
+}
+
+impl MessageLogFactory for FailingMessageLogFactory {
+  type Log = FailingMessageLog;
+
+  fn create(&self, _handler: &StringAtom) -> FailingMessageLog {
+    FailingMessageLog { should_fail: self.should_fail.clone() }
+  }
+}

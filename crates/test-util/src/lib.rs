@@ -2,12 +2,14 @@
 
 pub mod c2s_suite;
 pub mod m2s_suite;
+pub mod mock;
 pub mod modulator;
 pub mod s2m_suite;
 pub mod tls;
 
 pub use c2s_suite::{C2sSuite, default_c2s_config};
 pub use m2s_suite::{M2sSuite, default_m2s_config};
+pub use mock::{FailingChannelStore, FailingMessageLogFactory};
 pub use modulator::{TestModulator, default_s2m_config};
 pub use s2m_suite::{S2mSuite, default_s2m_config_with_secret};
 
@@ -189,33 +191,28 @@ impl<S: AsyncReadRent + AsyncWriteRent> TestConn<S> {
     Ok(())
   }
 
-  /// Reads and deserializes a message from the connection with a timeout.
-  ///
-  /// # Returns
-  ///
-  /// * `Ok(Message)` - If a message was successfully received and deserialized
-  /// * `Err(anyhow::Error)` - If the operation failed
-  ///
-  /// # Timeout
-  ///
-  /// The method uses a hardcoded 10-seconds timeout. If no message is received
-  /// within this timeframe, a timeout error is returned.
+  /// Reads and deserializes a message from the connection with a 10-second timeout.
   pub async fn read_message(&mut self) -> anyhow::Result<Message> {
-    // Set a timeout for reading the message
-    let read_timeout = Duration::from_secs(10);
+    self.try_read_message(Duration::from_secs(10)).await?.ok_or_else(|| anyhow!("timeout waiting for message"))
+  }
 
+  /// Reads and deserializes a message from the connection with a custom timeout.
+  ///
+  /// Returns `Ok(Some(msg))` if a message was received, `Ok(None)` on timeout,
+  /// or `Err` on I/O or deserialization errors.
+  pub async fn try_read_message(&mut self, timeout: Duration) -> anyhow::Result<Option<Message>> {
     let reader = &mut self.reader;
 
-    let line = match monoio::time::timeout(read_timeout, reader.next()).await {
+    let line = match monoio::time::timeout(timeout, reader.next()).await {
       Ok(Ok(true)) => reader.get_line().unwrap(),
       Ok(Ok(false)) => return Err(anyhow!("no message received")),
       Ok(Err(e)) => return Err(anyhow!("error reading from stream: {}", e)),
-      Err(_) => return Err(anyhow!("timeout waiting for message")),
+      Err(_) => return Ok(None),
     };
 
     let msg = deserialize(Cursor::new(line))?;
 
-    Ok(msg)
+    Ok(Some(msg))
   }
 
   /// Writes raw bytes directly to the connection without any encoding or framing.
