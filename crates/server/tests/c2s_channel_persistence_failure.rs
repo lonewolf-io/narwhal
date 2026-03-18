@@ -63,6 +63,7 @@ async fn test_c2s_join_channel_fails_when_store_save_fails() -> anyhow::Result<(
   let mlf = FailingMessageLogFactory::new();
 
   let mut config = default_c2s_config();
+  config.persistence_enabled = true;
   config.limits.max_channels_per_client = 1;
 
   let mut suite = C2sSuite::with_modulator_and_stores(config, Some(s2m_client), None, store.clone(), mlf).await?;
@@ -130,8 +131,10 @@ async fn test_c2s_broadcast_fails_when_message_log_append_fails() -> anyhow::Res
   let store = FailingChannelStore::new();
   let mlf = FailingMessageLogFactory::new();
 
-  let mut suite =
-    C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf.clone()).await?;
+  let mut config = default_c2s_config();
+  config.persistence_enabled = true;
+
+  let mut suite = C2sSuite::with_modulator_and_stores(config, Some(s2m_client), None, store, mlf.clone()).await?;
   suite.setup().await?;
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
@@ -190,8 +193,10 @@ async fn test_c2s_set_acl_fails_when_store_save_fails() -> anyhow::Result<()> {
   let store = FailingChannelStore::new();
   let mlf = FailingMessageLogFactory::new();
 
-  let mut suite =
-    C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store.clone(), mlf).await?;
+  let mut config = default_c2s_config();
+  config.persistence_enabled = true;
+
+  let mut suite = C2sSuite::with_modulator_and_stores(config, Some(s2m_client), None, store.clone(), mlf).await?;
   suite.setup().await?;
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
@@ -277,8 +282,10 @@ async fn test_c2s_set_config_fails_when_store_save_fails() -> anyhow::Result<()>
   let store = FailingChannelStore::new();
   let mlf = FailingMessageLogFactory::new();
 
-  let mut suite =
-    C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store.clone(), mlf).await?;
+  let mut config = default_c2s_config();
+  config.persistence_enabled = true;
+
+  let mut suite = C2sSuite::with_modulator_and_stores(config, Some(s2m_client), None, store.clone(), mlf).await?;
   suite.setup().await?;
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
@@ -351,8 +358,10 @@ async fn test_c2s_leave_channel_fails_when_store_save_fails() -> anyhow::Result<
   let store = FailingChannelStore::new();
   let mlf = FailingMessageLogFactory::new();
 
-  let mut suite =
-    C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store.clone(), mlf).await?;
+  let mut config = default_c2s_config();
+  config.persistence_enabled = true;
+
+  let mut suite = C2sSuite::with_modulator_and_stores(config, Some(s2m_client), None, store.clone(), mlf).await?;
   suite.setup().await?;
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;

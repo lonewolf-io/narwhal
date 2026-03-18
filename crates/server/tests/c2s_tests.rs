@@ -1268,7 +1268,7 @@ async fn test_c2s_channel_persist_configuration() -> anyhow::Result<()> {
   // Create a channel.
   suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
 
-  // Setting persist=true is not allowed without authentication (requires modulator).
+  // Setting persist=true is not allowed when persistence is disabled in server config.
   suite
     .write_message(
       TEST_USER_1,
@@ -1287,7 +1287,7 @@ async fn test_c2s_channel_persist_configuration() -> anyhow::Result<()> {
     ErrorParameters {
       id: Some(1234),
       reason: narwhal_protocol::ErrorReason::Forbidden.into(),
-      detail: Some(StringAtom::from("persistence requires auth"))
+      detail: Some(StringAtom::from("channel persistence disabled"))
     }
   );
 
@@ -1328,6 +1328,134 @@ async fn test_c2s_channel_persist_configuration() -> anyhow::Result<()> {
   } else {
     panic!("expected ChannelConfiguration response");
   }
+
+  suite.teardown().await?;
+
+  Ok(())
+}
+
+#[monoio::test(enable_timer = true)]
+async fn test_c2s_channel_persist_configuration_enabled() -> anyhow::Result<()> {
+  let mut config = default_c2s_config();
+  config.persistence_enabled = true;
+
+  let mut suite = C2sSuite::new(config).await?;
+  suite.setup().await?;
+
+  suite.identify(TEST_USER_1).await?;
+  suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
+
+  suite
+    .write_message(
+      TEST_USER_1,
+      Message::SetChannelConfiguration(SetChannelConfigurationParameters {
+        id: 1234,
+        channel: StringAtom::from("!test1@localhost"),
+        persist: Some(true),
+        ..Default::default()
+      }),
+    )
+    .await?;
+
+  assert_message!(
+    suite.read_message(TEST_USER_1).await?,
+    Message::SetChannelConfigurationAck,
+    SetChannelConfigurationAckParameters { id: 1234 }
+  );
+
+  suite
+    .write_message(
+      TEST_USER_1,
+      Message::GetChannelConfiguration(GetChannelConfigurationParameters {
+        id: 1235,
+        channel: StringAtom::from("!test1@localhost"),
+      }),
+    )
+    .await?;
+
+  let reply = suite.read_message(TEST_USER_1).await?;
+  if let Message::ChannelConfiguration(params) = reply {
+    assert_eq!(params.id, 1235);
+    assert!(params.persist);
+  } else {
+    panic!("expected ChannelConfiguration response");
+  }
+
+  suite.teardown().await?;
+
+  Ok(())
+}
+
+#[monoio::test(enable_timer = true)]
+async fn test_c2s_persistent_channel_membership_survives_disconnect() -> anyhow::Result<()> {
+  let mut config = default_c2s_config();
+  config.persistence_enabled = true;
+
+  let mut suite = C2sSuite::new(config).await?;
+  suite.setup().await?;
+
+  let mut owner = suite.tls_socket_connect().await?;
+  owner.write_message(Message::Connect(ConnectParameters { protocol_version: 1, heartbeat_interval: 0 })).await?;
+  assert!(matches!(owner.read_message().await?, Message::ConnectAck { .. }));
+  owner.write_message(Message::Identify(IdentifyParameters { username: StringAtom::from(TEST_USER_1) })).await?;
+  assert!(matches!(owner.read_message().await?, Message::IdentifyAck { .. }));
+
+  suite.identify(TEST_USER_2).await?;
+
+  owner
+    .write_message(Message::JoinChannel(JoinChannelParameters {
+      id: 1,
+      channel: StringAtom::from("!test1@localhost"),
+      on_behalf: None,
+    }))
+    .await?;
+  assert!(matches!(owner.read_message().await?, Message::JoinChannelAck(JoinChannelAckParameters { id: 1, .. })));
+
+  owner
+    .write_message(Message::SetChannelConfiguration(SetChannelConfigurationParameters {
+      id: 2,
+      channel: StringAtom::from("!test1@localhost"),
+      persist: Some(true),
+      ..Default::default()
+    }))
+    .await?;
+  assert!(matches!(
+    owner.read_message().await?,
+    Message::SetChannelConfigurationAck(SetChannelConfigurationAckParameters { id: 2 })
+  ));
+
+  suite.join_channel(TEST_USER_2, "!test1@localhost", None).await?;
+  assert!(matches!(owner.read_message().await?, Message::Event(_)));
+
+  owner.shutdown().await?;
+  monoio::time::sleep(Duration::from_millis(50)).await;
+
+  suite
+    .write_message(
+      TEST_USER_2,
+      Message::ListMembers(ListMembersParameters {
+        id: 3,
+        channel: StringAtom::from("!test1@localhost"),
+        page: None,
+        page_size: None,
+      }),
+    )
+    .await?;
+
+  assert_message!(
+    suite.read_message(TEST_USER_2).await?,
+    Message::ListMembersAck,
+    ListMembersAckParameters {
+      id: 3,
+      channel: StringAtom::from("!test1@localhost"),
+      members: Vec::from(
+        [StringAtom::from("test_user_1@localhost"), StringAtom::from("test_user_2@localhost")].as_slice()
+      ),
+      page: None,
+      page_size: None,
+      total_count: None,
+    }
+  );
 
   suite.teardown().await?;
 

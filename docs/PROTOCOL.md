@@ -366,7 +366,7 @@ Acknowledges a connection request and provides server capabilities.
 - `max_message_size` (u32, required): Maximum size of a message in bytes
 - `max_payload_size` (u32, required): Maximum size of a payload in bytes
 - `max_inflight_requests` (u32, required): Maximum number of concurrent requests
-- `max_persist_messages` (u32, optional): Maximum number of persisted messages per channel allowed by the server. Absent when persistence is not supported (i.e. server limit is 0).
+- `max_persist_messages` (u32, optional): Maximum number of persisted messages per channel allowed by the server. Absent when channel persistence is disabled by server config.
 
 **Example**:
 ```
@@ -885,6 +885,10 @@ CHAN_CONFIG id=9 channel=!42@example.com max_clients=100 max_payload_size=104857
 
 Sets the configuration for a channel. Only the channel owner can modify configuration. All configuration parameters are optional — only the fields present in the message are updated; absent fields retain their current values.
 
+Server policy note:
+- `persist=true` is allowed only when the server C2S config enables persistence (`persistence_enabled=true`).
+- This rule is independent of whether the client used `IDENTIFY` or `AUTH`.
+
 **Direction**: Client → Server
 
 **Parameters**:
@@ -901,6 +905,10 @@ SET_CHAN_CONFIG id=10 channel=!42@example.com max_clients=200 max_payload_size=2
 ```
 
 **Response**: [SET_CHAN_CONFIG_ACK](#set_chan_config_ack) or [ERROR](#error)
+
+Disconnect behavior note:
+- Membership in channels with `persist=true` survives disconnect.
+- Membership in channels with `persist=false` is removed when the client's last connection closes.
 
 ---
 

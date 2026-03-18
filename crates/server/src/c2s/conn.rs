@@ -328,9 +328,13 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
           max_message_size: config.limits.max_message_size,
           max_payload_size: config.limits.max_payload_size,
           max_inflight_requests: config.limits.max_inflight_requests,
-          max_persist_messages: match config.limits.max_persist_messages {
-            0 => None,
-            v => Some(v),
+          max_persist_messages: if config.persistence_enabled {
+            match config.limits.max_persist_messages {
+              0 => None,
+              v => Some(v),
+            }
+          } else {
+            None
           },
         });
 
@@ -797,9 +801,12 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
       };
     }
 
-    if channel_config.persist == Some(true) && !self.auth_required {
+    if channel_config.persist == Some(true) && !self.config.persistence_enabled {
       return Err(
-        narwhal_protocol::Error::new(Forbidden).with_id(correlation_id).with_detail("persistence requires auth").into(),
+        narwhal_protocol::Error::new(Forbidden)
+          .with_id(correlation_id)
+          .with_detail("channel persistence disabled")
+          .into(),
       );
     }
 
@@ -1175,8 +1182,8 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> narwhal_common::conn::Dispatcher 
       let should_cleanup = inner.c2s_router.unregister_connection(&nid.username, inner.transmitter.handler).await;
 
       if should_cleanup {
-        // Leave from all channels when last connection is closed.
-        channel_mng.leave_all_channels(nid.clone()).await?;
+        // Leave only transient channels when the last connection is closed.
+        channel_mng.leave_all_transient_channels(nid.clone()).await?;
       }
     }
 

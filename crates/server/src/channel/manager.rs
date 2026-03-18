@@ -107,6 +107,7 @@ enum Command {
   LeaveChannels {
     nid: Nid,
     handlers: Vec<StringAtom>,
+    include_persistent: bool,
     reply_tx: Sender<anyhow::Result<()>>,
   },
   DeleteChannel {
@@ -381,8 +382,8 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         let result = self.leave_channel(channel_id, nid, on_behalf_nid, transmitter, correlation_id).await;
         let _ = reply_tx.send(result).await;
       },
-      Command::LeaveChannels { nid, handlers, reply_tx } => {
-        let result = self.leave_channels(nid, handlers).await;
+      Command::LeaveChannels { nid, handlers, include_persistent, reply_tx } => {
+        let result = self.leave_channels(nid, handlers, include_persistent).await;
         let _ = reply_tx.send(result).await;
       },
       Command::DeleteChannel { channel_id, nid, transmitter, correlation_id, reply_tx } => {
@@ -632,10 +633,19 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     Ok(())
   }
 
-  async fn leave_channels(&mut self, nid: Nid, handlers: Vec<StringAtom>) -> anyhow::Result<()> {
+  async fn leave_channels(
+    &mut self,
+    nid: Nid,
+    handlers: Vec<StringAtom>,
+    include_persistent: bool,
+  ) -> anyhow::Result<()> {
     let mut removed = 0u64;
 
     for handler in &handlers {
+      if !include_persistent && self.channels.get(handler).is_some_and(|channel| channel.config.persist == Some(true)) {
+        continue;
+      }
+
       match self.do_leave(handler, &nid, None).await {
         Ok(true) => {
           self.membership.release_slot(&nid.username, handler).await;
@@ -1332,6 +1342,15 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
 
   /// Removes a user from all channels they are a member of.
   pub async fn leave_all_channels(&self, nid: Nid) -> anyhow::Result<()> {
+    self.leave_channels_matching(nid, true).await
+  }
+
+  /// Removes a user only from non-persistent channels they are a member of.
+  pub async fn leave_all_transient_channels(&self, nid: Nid) -> anyhow::Result<()> {
+    self.leave_channels_matching(nid, false).await
+  }
+
+  async fn leave_channels_matching(&self, nid: Nid, include_persistent: bool) -> anyhow::Result<()> {
     self.assert_bootstrapped();
 
     // Get channels first.
@@ -1352,7 +1371,9 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
 
     for (shard, handlers) in by_shard {
       let (reply_tx, reply_rx) = async_channel::bounded(1);
-      self.mailboxes[shard].send(Command::LeaveChannels { nid: nid.clone(), handlers, reply_tx }).await?;
+      self.mailboxes[shard]
+        .send(Command::LeaveChannels { nid: nid.clone(), handlers, include_persistent, reply_tx })
+        .await?;
       reply_rxs.push(reply_rx);
     }
     for reply_rx in reply_rxs {

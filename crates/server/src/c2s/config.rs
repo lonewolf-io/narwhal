@@ -70,6 +70,10 @@ pub struct Config {
   #[serde(default = "default_payload_read_timeout", with = "humantime_serde")]
   pub payload_read_timeout: Duration,
 
+  /// Whether channel persistence is enabled for this server.
+  #[serde(default = "default_persistence_enabled")]
+  pub persistence_enabled: bool,
+
   /// The C2S limits.
   #[serde(default)]
   pub limits: Limits,
@@ -79,6 +83,7 @@ impl Default for Config {
   fn default() -> Self {
     Config {
       listener: ListenerConfig::default(),
+      persistence_enabled: default_persistence_enabled(),
       connect_timeout: default_connect_timeout(),
       authenticate_timeout: default_authenticate_timeout(),
       keep_alive_interval: default_keep_alive_interval(),
@@ -124,6 +129,10 @@ fn default_payload_read_timeout() -> Duration {
 
 fn default_request_timeout() -> Duration {
   Duration::from_secs(20)
+}
+
+fn default_persistence_enabled() -> bool {
+  false
 }
 
 /// Limits for the C2S listener
