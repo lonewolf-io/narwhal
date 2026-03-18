@@ -49,7 +49,7 @@ pub trait MessageLogFactory: Clone + Send + Sync + 'static {
 
 /// Append-only log for persisting broadcast messages for a single channel.
 #[async_trait(?Send)]
-pub trait MessageLog: Send + 'static {
+pub trait MessageLog: 'static {
   /// Appends a message to the log, buffering it in memory without flushing to disk.
   /// When the number of stored messages exceeds `max_messages`, the oldest entries should be evicted.
   /// Call `flush` to persist buffered writes to durable storage.

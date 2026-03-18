@@ -1203,22 +1203,31 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
       let (tx, rx) = async_channel::bounded(self.mailbox_capacity);
       mailboxes.push(tx);
 
-      let shard = ChannelShard {
-        channels: HashMap::new(),
-        store: self.store.clone(),
-        message_log_factory: self.message_log_factory.clone(),
-        membership: self.membership.clone(),
-        mailbox: rx,
-        router: self.router.clone(),
-        notifier: self.notifier.clone(),
-        local_domain: local_domain.clone(),
-        total_channels: self.total_channels.clone(),
-        limits: self.limits.clone(),
-        metrics: self.metrics.clone(),
-      };
+      let store = self.store.clone();
+      let message_log_factory = self.message_log_factory.clone();
+      let membership = self.membership.clone();
+      let router = self.router.clone();
+      let notifier = self.notifier.clone();
+      let ld = local_domain.clone();
+      let total_channels = self.total_channels.clone();
+      let limits = self.limits.clone();
+      let metrics = self.metrics.clone();
 
       core_dispatcher
         .dispatch_at_shard(shard_id, move || async move {
+          let shard = ChannelShard {
+            channels: HashMap::new(),
+            store,
+            message_log_factory,
+            membership,
+            mailbox: rx,
+            router,
+            notifier,
+            local_domain: ld,
+            total_channels,
+            limits,
+            metrics,
+          };
           shard.restore_and_run(handlers_for_shard).await;
         })
         .await?;
