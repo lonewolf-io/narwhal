@@ -263,7 +263,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
     let auth_ack = tls_socket.read_message().await?;
     match &auth_ack {
       Message::AuthAck(params) => {
-        assert_eq!(params.succeeded, Some(true), "auth failed for user {}", username);
+        assert_eq!(params.succeeded, Some(true), "auth failed for token {} (client key {})", token, username);
       },
       other => panic!("expected AuthAck, got: {:?}", other),
     }
@@ -311,8 +311,8 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
     channel: &str,
     max_clients: Option<u32>,
     max_payload_size: Option<u32>,
-    persist: Option<bool>,
     max_persist_messages: Option<u32>,
+    persist: Option<bool>,
   ) -> anyhow::Result<()> {
     self
       .write_message(
@@ -406,6 +406,11 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
   pub async fn read_message(&mut self, username: &str) -> anyhow::Result<Message> {
     let tls_socket = self.get_tls_socket(username)?;
     tls_socket.read_message().await
+  }
+
+  pub async fn try_read_message(&mut self, username: &str, timeout: Duration) -> anyhow::Result<Option<Message>> {
+    let tls_socket = self.get_tls_socket(username)?;
+    tls_socket.try_read_message(timeout).await
   }
 
   pub async fn ignore_reply(&mut self, username: &str) -> anyhow::Result<()> {

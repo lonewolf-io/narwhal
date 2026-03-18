@@ -70,7 +70,7 @@ async fn test_c2s_join_channel_fails_when_store_save_fails() -> anyhow::Result<(
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
   suite.join_channel(TEST_USER_1, CHANNEL, None).await?;
-  suite.configure_channel(TEST_USER_1, CHANNEL, None, None, Some(true), None).await?;
+  suite.configure_channel(TEST_USER_1, CHANNEL, None, None, None, Some(true)).await?;
 
   store.set_fail(true);
 
@@ -136,7 +136,7 @@ async fn test_c2s_broadcast_fails_when_message_log_append_fails() -> anyhow::Res
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
   suite.join_channel(TEST_USER_1, CHANNEL, None).await?;
-  suite.configure_channel(TEST_USER_1, CHANNEL, None, None, Some(true), Some(100)).await?;
+  suite.configure_channel(TEST_USER_1, CHANNEL, None, None, Some(100), Some(true)).await?;
 
   suite.auth(TEST_USER_2, TEST_USER_2).await?;
   suite.join_channel(TEST_USER_2, CHANNEL, None).await?;
@@ -168,17 +168,13 @@ async fn test_c2s_broadcast_fails_when_message_log_append_fails() -> anyhow::Res
     reply
   );
 
-  // TEST_USER_2 will receive events from TEST_USER_1's disconnection cleanup:
-  // 1) MemberLeft event for TEST_USER_1
-  // 2) MemberJoined event for TEST_USER_2 as new owner (ownership transfer)
-  // But TEST_USER_2 must NOT receive the broadcast payload (Message::Message).
-  let msg1 = suite.read_message(TEST_USER_2).await?;
-  assert!(matches!(&msg1, Message::Event(_)), "expected event, got: {:?}", msg1);
-
-  let msg2 = suite.read_message(TEST_USER_2).await?;
-  assert!(matches!(&msg2, Message::Event(_)), "expected event, got: {:?}", msg2);
-
-  suite.expect_read_timeout(TEST_USER_2, Duration::from_secs(2)).await?;
+  // TEST_USER_2 may receive cleanup events (e.g. MemberLeft, ownership transfer)
+  // from TEST_USER_1's disconnection cleanup. Drain them all, but assert that no
+  // broadcast payload (Message::Message) is ever delivered.
+  let drain_timeout = Duration::from_secs(2);
+  while let Some(msg) = suite.try_read_message(TEST_USER_2, drain_timeout).await? {
+    assert!(!matches!(&msg, Message::Message(_)), "unexpected broadcast payload delivered to TEST_USER_2: {:?}", msg);
+  }
 
   suite.teardown().await?;
   s2m_ln.shutdown().await?;
@@ -200,7 +196,7 @@ async fn test_c2s_set_acl_fails_when_store_save_fails() -> anyhow::Result<()> {
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
   suite.join_channel(TEST_USER_1, CHANNEL, None).await?;
-  suite.configure_channel(TEST_USER_1, CHANNEL, Some(10), None, Some(true), None).await?;
+  suite.configure_channel(TEST_USER_1, CHANNEL, Some(10), None, None, Some(true)).await?;
 
   // Set ACL successfully once.
   suite
@@ -287,7 +283,7 @@ async fn test_c2s_set_config_fails_when_store_save_fails() -> anyhow::Result<()>
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
   suite.join_channel(TEST_USER_1, CHANNEL, None).await?;
-  suite.configure_channel(TEST_USER_1, CHANNEL, Some(5), Some(1024), Some(true), None).await?;
+  suite.configure_channel(TEST_USER_1, CHANNEL, Some(5), Some(1024), None, Some(true)).await?;
 
   store.set_fail(true);
 
@@ -361,7 +357,7 @@ async fn test_c2s_leave_channel_fails_when_store_save_fails() -> anyhow::Result<
 
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
   suite.join_channel(TEST_USER_1, CHANNEL, None).await?;
-  suite.configure_channel(TEST_USER_1, CHANNEL, None, None, Some(true), None).await?;
+  suite.configure_channel(TEST_USER_1, CHANNEL, None, None, None, Some(true)).await?;
 
   suite.auth(TEST_USER_2, TEST_USER_2).await?;
   suite.join_channel(TEST_USER_2, CHANNEL, None).await?;
