@@ -403,7 +403,7 @@ async fn test_c2s_join_full_channel() -> anyhow::Result<()> {
   suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
 
   // Configure channel to allow only one client.
-  suite.configure_channel(TEST_USER_1, "!test1@localhost", Some(1), Some(8192)).await?;
+  suite.configure_channel(TEST_USER_1, "!test1@localhost", Some(1), Some(8192), None, None).await?;
 
   // Join to the existing channel.
   suite
@@ -1666,7 +1666,7 @@ async fn test_c2s_channel_acl_max_entries() -> anyhow::Result<()> {
   suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
 
   // Set channels max clients to 2.
-  suite.configure_channel(TEST_USER_1, "!test1@localhost", Some(2), Some(8192)).await?;
+  suite.configure_channel(TEST_USER_1, "!test1@localhost", Some(2), Some(8192), None, None).await?;
 
   // Set the channel ACL (exceeding the maximum number of entries).
   suite

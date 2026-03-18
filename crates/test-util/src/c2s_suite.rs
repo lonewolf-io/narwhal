@@ -19,6 +19,7 @@ use narwhal_protocol::{
   LeaveChannelParameters, Message, SetChannelAclParameters, SetChannelConfigurationParameters,
 };
 use narwhal_server::c2s;
+use narwhal_server::channel::store::{ChannelStore, MessageLogFactory};
 use narwhal_server::channel::{ChannelManager, ChannelManagerLimits, NoopChannelStore, NoopMessageLogFactory};
 use narwhal_server::notifier::Notifier;
 use narwhal_server::router::GlobalRouter;
@@ -30,12 +31,12 @@ use crate::TestConn;
 type TlsStream = ClientTlsStream<TcpStream>;
 
 /// A test suite for the c2s server.
-pub struct C2sSuite {
+pub struct C2sSuite<CS: ChannelStore = NoopChannelStore, MLF: MessageLogFactory = NoopMessageLogFactory> {
   /// The server configuration.
   config: Arc<c2s::Config>,
 
   /// The server listener.
-  ln: c2s::C2sListener<NoopChannelStore, NoopMessageLogFactory>,
+  ln: c2s::C2sListener<CS, MLF>,
 
   /// The runtime dispatcher.
   runtime_dispatcher: CoreDispatcher,
@@ -44,7 +45,7 @@ pub struct C2sSuite {
   local_router: c2s::Router,
 
   /// The channel manager.
-  channel_manager: ChannelManager<NoopChannelStore, NoopMessageLogFactory>,
+  channel_manager: ChannelManager<CS, MLF>,
 
   /// The M2S payload receiver.
   m2s_payload_rx: Option<async_broadcast::Receiver<OutboundPrivatePayload>>,
@@ -56,7 +57,7 @@ pub struct C2sSuite {
   clients: HashMap<String, TestConn<TlsStream>>,
 }
 
-// === impl C2sSuite ===
+// === impl C2sSuite (default type params) ===
 
 impl C2sSuite {
   pub async fn default() -> anyhow::Result<Self> {
@@ -71,6 +72,20 @@ impl C2sSuite {
     config: c2s::Config,
     s2m_client: Option<S2mClient>,
     m2s_payload_rx: Option<async_broadcast::Receiver<OutboundPrivatePayload>>,
+  ) -> anyhow::Result<Self> {
+    Self::with_modulator_and_stores(config, s2m_client, m2s_payload_rx, NoopChannelStore, NoopMessageLogFactory).await
+  }
+}
+
+// === impl C2sSuite (generic) ===
+
+impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
+  pub async fn with_modulator_and_stores(
+    config: c2s::Config,
+    s2m_client: Option<S2mClient>,
+    m2s_payload_rx: Option<async_broadcast::Receiver<OutboundPrivatePayload>>,
+    channel_store: CS,
+    message_log_factory: MLF,
   ) -> anyhow::Result<Self> {
     let arc_config = Arc::new(config);
 
@@ -98,14 +113,8 @@ impl C2sSuite {
 
     let mut registry = Registry::default();
 
-    let mut channel_mng = ChannelManager::new(
-      global_router,
-      notifier,
-      channel_limits,
-      NoopChannelStore,
-      NoopMessageLogFactory,
-      &mut registry,
-    );
+    let mut channel_mng =
+      ChannelManager::new(global_router, notifier, channel_limits, channel_store, message_log_factory, &mut registry);
     channel_mng.bootstrap(&core_dispatcher).await?;
 
     let conn_cfg = narwhal_common::conn::Config {
@@ -232,6 +241,38 @@ impl C2sSuite {
     Ok(())
   }
 
+  /// Authenticates a user via the modulator AUTH flow.
+  ///
+  /// Performs CONNECT → AUTH → AuthAck, then registers the connection under the given username.
+  /// Requires that a modulator with an auth handler is configured.
+  #[allow(dead_code)]
+  pub async fn auth(&mut self, username: &str, token: &str) -> anyhow::Result<()> {
+    let mut tls_socket = self.tls_socket_connect().await?;
+
+    tls_socket
+      .write_message(Message::Connect(ConnectParameters { protocol_version: 1, heartbeat_interval: 0 }))
+      .await?;
+
+    let connect_ack = tls_socket.read_message().await?;
+    assert!(matches!(connect_ack, Message::ConnectAck { .. }), "expected ConnectAck, got: {:?}", connect_ack);
+
+    tls_socket
+      .write_message(Message::Auth(narwhal_protocol::AuthParameters { token: StringAtom::from(token) }))
+      .await?;
+
+    let auth_ack = tls_socket.read_message().await?;
+    match &auth_ack {
+      Message::AuthAck(params) => {
+        assert_eq!(params.succeeded, Some(true), "auth failed for user {}", username);
+      },
+      other => panic!("expected AuthAck, got: {:?}", other),
+    }
+
+    self.clients.insert(username.to_string(), tls_socket);
+
+    Ok(())
+  }
+
   pub async fn join_channel(&mut self, username: &str, channel: &str, on_behalf: Option<&str>) -> anyhow::Result<()> {
     let on_behalf = on_behalf.map(StringAtom::from);
 
@@ -270,6 +311,8 @@ impl C2sSuite {
     channel: &str,
     max_clients: Option<u32>,
     max_payload_size: Option<u32>,
+    persist: Option<bool>,
+    max_persist_messages: Option<u32>,
   ) -> anyhow::Result<()> {
     self
       .write_message(
@@ -279,6 +322,8 @@ impl C2sSuite {
           channel: StringAtom::from(channel),
           max_clients,
           max_payload_size,
+          persist,
+          max_persist_messages,
           ..Default::default()
         }),
       )
