@@ -9,7 +9,7 @@ pub mod tls;
 
 pub use c2s_suite::{C2sSuite, default_c2s_config};
 pub use m2s_suite::{M2sSuite, default_m2s_config};
-pub use mock::{FailingChannelStore, FailingMessageLogFactory};
+pub use mock::{FailingChannelStore, FailingMessageLogFactory, InMemoryChannelStore};
 pub use modulator::{TestModulator, default_s2m_config};
 pub use s2m_suite::{S2mSuite, default_s2m_config_with_secret};
 

@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use async_trait::async_trait;
 use monoio::io::AsyncWriteRent;
-
-use narwhal_protocol::Message;
+use narwhal_protocol::{Message, Nid};
 use narwhal_server::channel::store::{ChannelStore, MessageLog, MessageLogFactory, PersistedChannel};
+use narwhal_server::channel::{ChannelAcl, ChannelConfig};
 use narwhal_util::pool::PoolBuffer;
 use narwhal_util::string_atom::StringAtom;
 
@@ -106,5 +108,63 @@ impl MessageLogFactory for FailingMessageLogFactory {
 
   fn create(&self, _handler: &StringAtom) -> FailingMessageLog {
     FailingMessageLog { should_fail: self.should_fail.clone() }
+  }
+}
+
+/// Stored snapshot of a persisted channel (owned, thread-safe data).
+struct StoredChannel {
+  handler: StringAtom,
+  owner: Option<Nid>,
+  config: ChannelConfig,
+  acl: ChannelAcl,
+  members: Vec<Nid>,
+}
+
+/// An in-memory channel store for integration tests.
+#[derive(Clone, Default)]
+pub struct InMemoryChannelStore {
+  channels: Arc<async_lock::Mutex<HashMap<StringAtom, StoredChannel>>>,
+}
+
+impl InMemoryChannelStore {
+  pub fn new() -> Self {
+    Self { channels: Arc::new(async_lock::Mutex::new(HashMap::new())) }
+  }
+}
+
+#[async_trait(?Send)]
+impl ChannelStore for InMemoryChannelStore {
+  async fn save_channel(&self, channel: &PersistedChannel) -> anyhow::Result<()> {
+    let stored = StoredChannel {
+      handler: channel.handler.clone(),
+      owner: channel.owner.clone(),
+      config: channel.config.clone(),
+      acl: channel.acl.clone(),
+      members: channel.members.iter().cloned().collect(),
+    };
+    self.channels.lock().await.insert(channel.handler.clone(), stored);
+    Ok(())
+  }
+
+  async fn delete_channel(&self, handler: &StringAtom) -> anyhow::Result<()> {
+    self.channels.lock().await.remove(handler);
+    Ok(())
+  }
+
+  async fn load_channel_handlers(&self) -> anyhow::Result<Arc<[StringAtom]>> {
+    let guard = self.channels.lock().await;
+    Ok(guard.keys().cloned().collect::<Vec<_>>().into())
+  }
+
+  async fn load_channel(&self, handler: &StringAtom) -> anyhow::Result<PersistedChannel> {
+    let guard = self.channels.lock().await;
+    let stored = guard.get(handler).ok_or_else(|| anyhow::anyhow!("channel not found: {}", handler))?;
+    Ok(PersistedChannel {
+      handler: stored.handler.clone(),
+      owner: stored.owner.clone(),
+      config: stored.config.clone(),
+      acl: stored.acl.clone(),
+      members: Rc::from(stored.members.clone()),
+    })
   }
 }

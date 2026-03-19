@@ -1220,15 +1220,21 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
   }
 
   /// Spawns one shard actor per core on the given dispatcher.
-  pub async fn bootstrap(&mut self, core_dispatcher: &CoreDispatcher) -> anyhow::Result<()> {
+  ///
+  /// When `restore_channels` is `true`, persisted channels are loaded from the
+  /// store and restored into the appropriate shards. Pass `false` when auth is
+  /// disabled — without auth, memberships are ephemeral, so restoring them at
+  /// startup would leave orphaned channels.
+  pub async fn bootstrap(&mut self, core_dispatcher: &CoreDispatcher, restore_channels: bool) -> anyhow::Result<()> {
     self.membership.bootstrap(core_dispatcher).await?;
 
     let shard_count = core_dispatcher.shard_count();
     let mut mailboxes = Vec::with_capacity(shard_count);
     let local_domain = self.router.c2s_router().local_domain();
 
-    // Load persisted channel handlers and group by shard.
-    let handlers = self.store.load_channel_handlers().await?;
+    // Load persisted channel handlers and group by shard (only when restoring).
+    let handlers: Arc<[StringAtom]> =
+      if restore_channels { self.store.load_channel_handlers().await? } else { Arc::from([]) };
 
     let mut shard_handlers: Vec<Vec<StringAtom>> = vec![Vec::new(); shard_count];
     for handler in handlers.iter() {

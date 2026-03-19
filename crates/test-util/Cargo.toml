@@ -12,6 +12,7 @@ monoio-rustls = "0.4.0"
 futures = "0.3.32"
 async-broadcast = "0.7.2"
 async-channel = "2.5.0"
+async-lock = "3"
 narwhal-client = { path = "../client" }
 narwhal-common = { path = "../common" }
 narwhal-modulator = { path = "../modulator" }

@@ -1150,6 +1150,7 @@ dependencies = [
  "anyhow",
  "async-broadcast",
  "async-channel",
+ "async-lock",
  "async-trait",
  "futures",
  "monoio",

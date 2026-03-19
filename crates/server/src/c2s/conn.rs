@@ -139,23 +139,17 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> std::fmt::Debug for C2sDispatcher
 
 impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherFactory<CS, MLF> {
   /// Creates a new C2S `C2sDispatcherFactory`.
-  pub async fn new(
+  pub fn new(
     config: Arc<Config>,
     channel_manager: ChannelManager<CS, MLF>,
     c2s_router: c2s::Router,
     modulator: Option<Arc<dyn Modulator>>,
+    auth_required: bool,
     registry: &mut Registry,
-  ) -> anyhow::Result<Self> {
-    let auth_required = {
-      match modulator.as_ref() {
-        Some(modulator) => modulator.operations().await?.contains(Operation::Auth),
-        None => false,
-      }
-    };
-
+  ) -> Self {
     let inner = C2sDispatcherFactoryInner { config, channel_manager, c2s_router, modulator, auth_required };
 
-    Ok(Self { inner: Arc::new(RwLock::new(inner)), metrics: C2sDispatcherMetrics::register(registry) })
+    Self { inner: Arc::new(RwLock::new(inner)), metrics: C2sDispatcherMetrics::register(registry) }
   }
 }
 

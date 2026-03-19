@@ -19,7 +19,8 @@ use narwhal_protocol::{
   ModDirectParameters, SetChannelConfigurationParameters,
 };
 use narwhal_test_util::{
-  C2sSuite, TestModulator, assert_message, default_c2s_config, default_m2s_config, default_s2m_config,
+  C2sSuite, InMemoryChannelStore, TestModulator, assert_message, default_c2s_config, default_m2s_config,
+  default_s2m_config,
 };
 use narwhal_util::pool::Pool;
 use narwhal_util::string_atom::StringAtom;
@@ -1037,6 +1038,142 @@ async fn test_c2s_modulator_leave_channels_on_disconnect_disabled() -> anyhow::R
   suite.teardown().await?;
   s2m_ln.shutdown().await?;
   core_dispatcher.shutdown().await?;
+
+  Ok(())
+}
+
+/// Seeds a persistent channel into the given store by spinning up an
+/// authenticated session, joining a channel, and enabling persistence.
+async fn seed_persistent_channel(store: &InMemoryChannelStore, channel: &str) -> anyhow::Result<()> {
+  let modulator = TestModulator::new()
+    .with_auth_handler(|token| async move { Ok(AuthResult::Success { username: StringAtom::from(token.as_ref()) }) });
+
+  let mut core_dispatcher = CoreDispatcher::new(1);
+  core_dispatcher.bootstrap().await?;
+
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
+  s2m_ln.bootstrap().await?;
+
+  let s2m_client = S2mClient::new(S2mConfig {
+    address: s2m_ln.local_address().unwrap().to_string(),
+    shared_secret: SHARED_SECRET.to_string(),
+    ..Default::default()
+  })?;
+
+  let mlf = narwhal_server::channel::NoopMessageLogFactory;
+  let mut suite =
+    C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store.clone(), mlf).await?;
+  suite.setup().await?;
+
+  suite.auth(TEST_USER_1, TEST_USER_1).await?;
+  suite.join_channel(TEST_USER_1, channel, None).await?;
+  suite.configure_channel(TEST_USER_1, channel, None, None, None, Some(true)).await?;
+
+  suite.teardown().await?;
+  s2m_ln.shutdown().await?;
+  core_dispatcher.shutdown().await?;
+
+  Ok(())
+}
+
+#[monoio::test(enable_timer = true)]
+async fn test_c2s_persisted_channels_restored_when_auth_enabled() -> anyhow::Result<()> {
+  let store = InMemoryChannelStore::new();
+  seed_persistent_channel(&store, "!persist@localhost").await?;
+
+  // Restart with auth enabled — channel should be restored.
+  let modulator = TestModulator::new()
+    .with_auth_handler(|token| async move { Ok(AuthResult::Success { username: StringAtom::from(token.as_ref()) }) });
+
+  let mut core_dispatcher = CoreDispatcher::new(1);
+  core_dispatcher.bootstrap().await?;
+
+  let mut s2m_ln = create_s2m_listener(
+    default_s2m_config(SHARED_SECRET),
+    modulator,
+    core_dispatcher.clone(),
+    &mut Registry::default(),
+  )
+  .await?;
+  s2m_ln.bootstrap().await?;
+
+  let s2m_client = S2mClient::new(S2mConfig {
+    address: s2m_ln.local_address().unwrap().to_string(),
+    shared_secret: SHARED_SECRET.to_string(),
+    ..Default::default()
+  })?;
+
+  let mlf = narwhal_server::channel::NoopMessageLogFactory;
+  let mut suite =
+    C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store.clone(), mlf).await?;
+  suite.setup().await?;
+
+  suite.auth(TEST_USER_1, TEST_USER_1).await?;
+
+  suite
+    .write_message(
+      TEST_USER_1,
+      Message::ListChannels(ListChannelsParameters { id: 1, page: None, page_size: None, owner: false }),
+    )
+    .await?;
+
+  let reply = suite.read_message(TEST_USER_1).await?;
+  match reply {
+    Message::ListChannelsAck(params) => {
+      assert!(
+        params.channels.contains(&StringAtom::from("!persist@localhost")),
+        "persisted channel should be restored when auth is enabled, got: {:?}",
+        params.channels
+      );
+    },
+    other => panic!("expected ListChannelsAck, got: {:?}", other),
+  }
+
+  suite.teardown().await?;
+  s2m_ln.shutdown().await?;
+  core_dispatcher.shutdown().await?;
+
+  Ok(())
+}
+
+#[monoio::test(enable_timer = true)]
+async fn test_c2s_persisted_channels_not_restored_when_auth_disabled() -> anyhow::Result<()> {
+  let store = InMemoryChannelStore::new();
+  seed_persistent_channel(&store, "!persist@localhost").await?;
+
+  // Restart WITHOUT auth (no modulator) — channel should NOT be restored.
+  let mlf = narwhal_server::channel::NoopMessageLogFactory;
+  let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), None, None, store.clone(), mlf).await?;
+  suite.setup().await?;
+
+  suite.identify(TEST_USER_1).await?;
+
+  suite
+    .write_message(
+      TEST_USER_1,
+      Message::ListChannels(ListChannelsParameters { id: 1, page: None, page_size: None, owner: false }),
+    )
+    .await?;
+
+  let reply = suite.read_message(TEST_USER_1).await?;
+  match reply {
+    Message::ListChannelsAck(params) => {
+      assert!(
+        params.channels.is_empty(),
+        "persisted channels should NOT be restored when auth is disabled, got: {:?}",
+        params.channels
+      );
+    },
+    other => panic!("expected ListChannelsAck, got: {:?}", other),
+  }
+
+  suite.teardown().await?;
 
   Ok(())
 }
