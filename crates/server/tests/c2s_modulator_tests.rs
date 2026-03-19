@@ -964,7 +964,7 @@ async fn test_c2s_modulator_leave_channels_on_disconnect_enabled() -> anyhow::Re
   suite.ignore_reply(TEST_USER_1).await?;
 
   // Drop User 1's connection (the only one for that user).
-  suite.drop_client(TEST_USER_1);
+  suite.drop_client(TEST_USER_1)?;
 
   // Wait for the server to process the disconnection.
   monoio::time::sleep(Duration::from_secs(1)).await;
@@ -1029,7 +1029,7 @@ async fn test_c2s_modulator_leave_channels_on_disconnect_disabled() -> anyhow::R
   suite.ignore_reply(TEST_USER_1).await?;
 
   // Drop User 1's connection (the only one for that user).
-  suite.drop_client(TEST_USER_1);
+  suite.drop_client(TEST_USER_1)?;
 
   // Wait for the server to process the disconnection.
   monoio::time::sleep(Duration::from_secs(1)).await;

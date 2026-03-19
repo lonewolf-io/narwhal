@@ -425,8 +425,12 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
 
   /// Drops (disconnects) the client connection for the given username.
   #[allow(dead_code)]
-  pub fn drop_client(&mut self, username: &str) {
-    self.clients.remove(username);
+  pub fn drop_client(&mut self, username: &str) -> anyhow::Result<()> {
+    if self.clients.remove(username).is_some() {
+      Ok(())
+    } else {
+      Err(anyhow!("client not found"))
+    }
   }
 
   fn get_tls_socket(&mut self, username: &str) -> anyhow::Result<&mut TestConn<TlsStream>> {
