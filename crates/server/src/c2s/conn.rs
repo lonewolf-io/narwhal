@@ -1168,8 +1168,10 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> narwhal_common::conn::Dispatcher 
       // Unregister the username.
       let should_cleanup = inner.c2s_router.unregister_connection(&nid.username, inner.transmitter.handler).await;
 
-      if should_cleanup && (!inner.auth_required || inner.config.leave_channels_on_disconnect) {
+      if should_cleanup {
         // Leave from all channels when last connection is closed.
+        // The channel manager decides which channels to actually leave
+        // based on persistence.
         channel_mng.leave_all_channels(nid.clone()).await?;
       }
     }

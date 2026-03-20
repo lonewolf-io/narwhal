@@ -322,6 +322,7 @@ struct ChannelShard<CS: ChannelStore, MLF: MessageLogFactory> {
   total_channels: Arc<AtomicUsize>,
   limits: ChannelManagerLimits,
   metrics: ChannelManagerMetrics,
+  auth_enabled: bool,
 }
 
 // === impl ChannelShard ===
@@ -636,6 +637,12 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     let mut removed = 0u64;
 
     for handler in &handlers {
+      // Skip persistent channels when auth is enabled, user stays until explicit leave.
+      let is_persistent = self.channels.get(handler).is_some_and(|c| c.config.persist == Some(true));
+      if self.auth_enabled && is_persistent {
+        continue;
+      }
+
       match self.do_leave(handler, &nid, None).await {
         Ok(true) => {
           self.membership.release_slot(&nid.username, handler).await;
@@ -1270,6 +1277,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
             total_channels,
             limits,
             metrics,
+            auth_enabled: restore_channels,
           };
           shard.restore_and_run(handlers_for_shard).await;
         })

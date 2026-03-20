@@ -517,6 +517,8 @@ Acknowledges a channel leave request.
 LEAVE_ACK id=2
 ```
 
+**Disconnect behavior**: When a user's last connection disconnects, the server automatically removes them from all **transient** (non-persistent) channels. Membership in **persistent** channels (`persist=true`) is preserved across disconnects — users remain members until they explicitly leave or are removed by the channel owner. Without authentication, all channel memberships are always cleaned up on disconnect regardless of the persistence flag.
+
 ---
 
 ### DELETE

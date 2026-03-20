@@ -70,12 +70,6 @@ pub struct Config {
   #[serde(default = "default_payload_read_timeout", with = "humantime_serde")]
   pub payload_read_timeout: Duration,
 
-  /// Leave all joined channels when the user's last connection disconnects.
-  /// Only effective when authentication is enabled; without authentication
-  /// channels are always cleaned up on disconnect.
-  #[serde(default = "default_leave_channels_on_disconnect")]
-  pub leave_channels_on_disconnect: bool,
-
   /// The C2S limits.
   #[serde(default)]
   pub limits: Limits,
@@ -91,7 +85,6 @@ impl Default for Config {
       min_keep_alive_interval: default_min_keep_alive_interval(),
       payload_read_timeout: default_payload_read_timeout(),
       request_timeout: default_request_timeout(),
-      leave_channels_on_disconnect: default_leave_channels_on_disconnect(),
       limits: Limits::default(),
     }
   }
@@ -131,10 +124,6 @@ fn default_payload_read_timeout() -> Duration {
 
 fn default_request_timeout() -> Duration {
   Duration::from_secs(20)
-}
-
-fn default_leave_channels_on_disconnect() -> bool {
-  false
 }
 
 /// Limits for the C2S listener

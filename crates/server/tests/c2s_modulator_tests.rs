@@ -923,7 +923,7 @@ async fn test_c2s_channel_persist_allowed_for_authenticated_users() -> anyhow::R
 }
 
 #[monoio::test(enable_timer = true)]
-async fn test_c2s_modulator_leave_channels_on_disconnect_enabled() -> anyhow::Result<()> {
+async fn test_c2s_modulator_leave_transient_channels_on_disconnect() -> anyhow::Result<()> {
   let modulator = TestModulator::new().with_auth_handler(|token| async move {
     let username = token.to_string();
     Ok(AuthResult::Success { username: StringAtom::from(username) })
@@ -947,17 +947,14 @@ async fn test_c2s_modulator_leave_channels_on_disconnect_enabled() -> anyhow::Re
     ..Default::default()
   })?;
 
-  let mut config = default_c2s_config();
-  config.leave_channels_on_disconnect = true;
-
-  let mut suite = C2sSuite::with_modulator(config, Some(s2m_client.clone()), None).await?;
+  let mut suite = C2sSuite::with_modulator(default_c2s_config(), Some(s2m_client.clone()), None).await?;
   suite.setup().await?;
 
   // Authenticate two users.
   suite.auth(TEST_USER_1, TEST_USER_1).await?;
   suite.auth(TEST_USER_2, TEST_USER_2).await?;
 
-  // Both join the same channel.
+  // Both join the same channel (transient by default).
   suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
   suite.join_channel(TEST_USER_2, "!test1@localhost", None).await?;
 
@@ -967,7 +964,7 @@ async fn test_c2s_modulator_leave_channels_on_disconnect_enabled() -> anyhow::Re
   // Drop User 1's connection (the only one for that user).
   suite.drop_client(TEST_USER_1)?;
 
-  // User 2 should receive a MemberLeft event for User 1 (channels cleaned up).
+  // User 2 should receive a MemberLeft event for User 1 (transient channels cleaned up).
   let msg =
     suite.try_read_message(TEST_USER_2, Duration::from_secs(5)).await?.expect("timed out waiting for MemberLeft event");
 
@@ -990,7 +987,7 @@ async fn test_c2s_modulator_leave_channels_on_disconnect_enabled() -> anyhow::Re
 }
 
 #[monoio::test(enable_timer = true)]
-async fn test_c2s_modulator_leave_channels_on_disconnect_disabled() -> anyhow::Result<()> {
+async fn test_c2s_modulator_keep_persistent_channels_on_disconnect() -> anyhow::Result<()> {
   let modulator = TestModulator::new().with_auth_handler(|token| async move {
     let username = token.to_string();
     Ok(AuthResult::Success { username: StringAtom::from(username) })
@@ -1014,7 +1011,6 @@ async fn test_c2s_modulator_leave_channels_on_disconnect_disabled() -> anyhow::R
     ..Default::default()
   })?;
 
-  // Default config has leave_channels_on_disconnect = false.
   let mut suite = C2sSuite::with_modulator(default_c2s_config(), Some(s2m_client.clone()), None).await?;
   suite.setup().await?;
 
@@ -1029,10 +1025,24 @@ async fn test_c2s_modulator_leave_channels_on_disconnect_disabled() -> anyhow::R
   // User 1 receives a MemberJoined event for User 2.
   suite.ignore_reply(TEST_USER_1).await?;
 
+  // User 1 (channel owner) enables persistence.
+  suite
+    .write_message(
+      TEST_USER_1,
+      Message::SetChannelConfiguration(SetChannelConfigurationParameters {
+        id: 1,
+        channel: StringAtom::from("!test1@localhost"),
+        persist: Some(true),
+        ..Default::default()
+      }),
+    )
+    .await?;
+  assert!(matches!(suite.read_message(TEST_USER_1).await?, Message::SetChannelConfigurationAck { .. }));
+
   // Drop User 1's connection (the only one for that user).
   suite.drop_client(TEST_USER_1)?;
 
-  // User 2 should NOT receive any MemberLeft event (channels preserved).
+  // User 2 should NOT receive any MemberLeft event (persistent channel preserved).
   suite.expect_read_timeout(TEST_USER_2, Duration::from_secs(2)).await?;
 
   suite.teardown().await?;
