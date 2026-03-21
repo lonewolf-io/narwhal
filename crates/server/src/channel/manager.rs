@@ -178,7 +178,7 @@ enum Command {
 
 /// A channel.
 struct Channel<ML: MessageLog> {
-  handler: StringAtom,
+  id: ChannelId,
   owner: Option<Nid>,
   config: ChannelConfig,
   acl: ChannelAcl,
@@ -192,9 +192,9 @@ struct Channel<ML: MessageLog> {
 // === impl Channel ===
 
 impl<ML: MessageLog> Channel<ML> {
-  fn new(handler: StringAtom, config: ChannelConfig, notifier: Notifier, message_log: ML) -> Self {
+  fn new(id: ChannelId, config: ChannelConfig, notifier: Notifier, message_log: ML) -> Self {
     Self {
-      handler,
+      id,
       owner: None,
       config,
       acl: ChannelAcl::default(),
@@ -211,7 +211,7 @@ impl<ML: MessageLog> Channel<ML> {
   }
 
   fn is_owner(&self, nid: &Nid) -> bool {
-    self.owner == Some(nid.clone())
+    self.owner.as_ref() == Some(nid)
   }
 
   fn is_member(&self, nid: &Nid) -> bool {
@@ -261,11 +261,11 @@ impl<ML: MessageLog> Channel<ML> {
     nid: &Nid,
     excluding_resource: Option<Resource>,
     as_owner: bool,
-    local_domain: StringAtom,
   ) -> anyhow::Result<()> {
-    let channel_id = ChannelId::new_unchecked(self.handler.clone(), local_domain);
-    let event =
-      Event::new(EventKind::MemberJoined).with_channel(channel_id.into()).with_nid(nid.into()).with_owner(as_owner);
+    let event = Event::new(EventKind::MemberJoined)
+      .with_channel(self.id.clone().into())
+      .with_nid(nid.into())
+      .with_owner(as_owner);
     self.notifier.notify(event, self.members.iter(), excluding_resource).await
   }
 
@@ -274,21 +274,14 @@ impl<ML: MessageLog> Channel<ML> {
     nid: &Nid,
     excluding_resource: Option<Resource>,
     as_owner: bool,
-    local_domain: StringAtom,
   ) -> anyhow::Result<()> {
-    let channel_id = ChannelId::new_unchecked(self.handler.clone(), local_domain);
     let event =
-      Event::new(EventKind::MemberLeft).with_channel(channel_id.into()).with_nid(nid.into()).with_owner(as_owner);
+      Event::new(EventKind::MemberLeft).with_channel(self.id.clone().into()).with_nid(nid.into()).with_owner(as_owner);
     self.notifier.notify(event, self.members.iter(), excluding_resource).await
   }
 
-  async fn notify_channel_deleted(
-    &self,
-    excluding_resource: Option<Resource>,
-    local_domain: StringAtom,
-  ) -> anyhow::Result<()> {
-    let channel_id = ChannelId::new_unchecked(self.handler.clone(), local_domain);
-    let event = Event::new(EventKind::ChannelDeleted).with_channel(channel_id.into());
+  async fn notify_channel_deleted(&self, excluding_resource: Option<Resource>) -> anyhow::Result<()> {
+    let event = Event::new(EventKind::ChannelDeleted).with_channel(self.id.clone().into());
     self.notifier.notify(event, self.members.iter(), excluding_resource).await
   }
 
@@ -300,7 +293,7 @@ impl<ML: MessageLog> Channel<ML> {
 
   fn to_persisted(&self) -> PersistedChannel {
     PersistedChannel {
-      handler: self.handler.clone(),
+      handler: self.id.handler.clone(),
       owner: self.owner.clone(),
       config: self.config.clone(),
       acl: self.acl.clone(),
@@ -347,7 +340,8 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
 
       let message_log = self.message_log_factory.create(handler);
 
-      let mut channel = Channel::new(handler.clone(), persisted.config, self.notifier.clone(), message_log);
+      let channel_id = ChannelId::new_unchecked(handler.clone(), self.local_domain.clone());
+      let mut channel = Channel::new(channel_id, persisted.config, self.notifier.clone(), message_log);
       channel.owner = persisted.owner;
       channel.acl = persisted.acl;
       channel.members = persisted.members;
@@ -456,7 +450,9 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         persist: Some(false),
       };
       let message_log = self.message_log_factory.create(&handler);
-      self.channels.insert(handler.clone(), Channel::new(handler.clone(), config, self.notifier.clone(), message_log));
+      self
+        .channels
+        .insert(handler.clone(), Channel::new(channel_id.clone(), config, self.notifier.clone(), message_log));
       self.total_channels.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -564,10 +560,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     }
     channel.members = new_members;
     channel.update_allowed_targets();
-    if let Err(e) = channel
-      .notify_member_joined(&new_member_nid, Some(transmitter.resource()), as_owner, self.local_domain.clone())
-      .await
-    {
+    if let Err(e) = channel.notify_member_joined(&new_member_nid, Some(transmitter.resource()), as_owner).await {
       warn!(channel = %handler, error = %e, "failed to notify member joined");
     }
 
@@ -681,7 +674,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       return Err(narwhal_protocol::Error::new(Forbidden).with_id(correlation_id).into());
     }
 
-    channel.notify_channel_deleted(Some(transmitter.resource()), self.local_domain.clone()).await?;
+    channel.notify_channel_deleted(Some(transmitter.resource())).await?;
 
     // Collect member usernames to release membership slots.
     let member_usernames: Vec<StringAtom> =
@@ -994,13 +987,11 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     handlers
       .iter()
       .filter_map(|handler| {
-        self.channels.get(handler).and_then(|channel| {
-          if channel.is_owner(nid) {
-            Some(ChannelId::new_unchecked(handler.clone(), self.local_domain.clone()).into())
-          } else {
-            None
-          }
-        })
+        self.channels.get(handler).and_then(
+          |channel| {
+            if channel.is_owner(nid) { Some(channel.id.clone().into()) } else { None }
+          },
+        )
       })
       .collect()
   }
@@ -1115,7 +1106,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       self.store.save_channel(&projected).await?;
     }
 
-    if let Err(e) = channel.notify_member_left(nid, excluding_resource, as_owner, self.local_domain.clone()).await {
+    if let Err(e) = channel.notify_member_left(nid, excluding_resource, as_owner).await {
       warn!(channel = %handler, error = %e, "failed to notify member left");
     }
 
@@ -1144,7 +1135,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     if let Some(new_owner) = new_owner {
       let channel = self.channels.get_mut(handler).unwrap();
       channel.owner = Some(new_owner.clone());
-      if let Err(e) = channel.notify_member_joined(&new_owner, None, true, self.local_domain.clone()).await {
+      if let Err(e) = channel.notify_member_joined(&new_owner, None, true).await {
         warn!(channel = %handler, error = %e, "failed to notify new owner");
       }
     }
@@ -1659,13 +1650,11 @@ impl Acl {
     if self.allow_lists.is_empty() {
       return true;
     }
-    let domain = nid.domain.clone();
-    let username = nid.username.clone();
-    if let Some(allowed_users) = self.allow_lists.get(&domain) {
+    if let Some(allowed_users) = self.allow_lists.get(&nid.domain) {
       if allowed_users.is_empty() {
         return true;
       }
-      return allowed_users.contains(&username);
+      return allowed_users.contains(&nid.username);
     }
     false
   }

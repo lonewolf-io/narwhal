@@ -400,7 +400,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
               }));
 
               self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "success" }).inc();
-              trace!(handler = self.transmitter.handler, nid = nid.to_string(), "user authenticated");
+              trace!(handler = self.transmitter.handler, nid = %nid, "user authenticated");
 
               Ok(true)
             },
@@ -463,7 +463,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
         self.transmitter.send_message(Message::IdentifyAck(IdentifyAckParameters { nid: StringAtom::from(nid) }));
 
         self.metrics.identify_attempts.get_or_create(&ResultLabel { result: "success" }).inc();
-        trace!(handler = self.transmitter.handler, nid = nid.to_string(), "user identified");
+        trace!(handler = self.transmitter.handler, nid = %nid, "user identified");
 
         Ok(true)
       },
@@ -562,8 +562,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
     }
     let channel_id = channel_id.unwrap();
 
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
     // Forward the payload to the modulator (if available) for validation and alteration.
     let mut altered_payload = payload;
@@ -592,9 +591,9 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
           self.metrics.modulator_forward_payload.get_or_create(&ResultLabel { result: "error" }).inc();
           error!(
             handler = self.transmitter.handler,
-            nid = nid.to_string(),
-            channel = channel_id.to_string(),
-            error = e.to_string(),
+            nid = %nid,
+            channel = %channel_id,
+            error = %e,
             "payload validation failed"
           );
           return Err(narwhal_protocol::Error::new(InternalServerError).with_id(correlation_id).into());
@@ -607,15 +606,22 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
 
     self
       .channel_manager
-      .broadcast_payload(altered_payload, channel_id.clone(), nid.clone(), transmitter, qos, correlation_id)
+      .broadcast_payload(
+        altered_payload,
+        channel_id.clone(),
+        nid.clone(),
+        self.transmitter.clone(),
+        qos,
+        correlation_id,
+      )
       .await?;
 
     self.metrics.broadcast_payload_bytes.observe(payload_length as f64);
 
     trace!(
       handler = self.transmitter.handler,
-      nid = nid.to_string(),
-      channel = channel_id.to_string(),
+      nid = %nid,
+      channel = %channel_id,
       content_length = payload_length,
       "broadcasted payload"
     );
@@ -645,20 +651,27 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
     let page = params.page;
     let page_size = params.page_size;
 
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
     // Submit the request to get the channel ACL.
     self
       .channel_manager
-      .get_channel_acl(channel_id.clone(), nid.clone(), acl_type, page, page_size, transmitter, correlation_id)
+      .get_channel_acl(
+        channel_id.clone(),
+        nid.clone(),
+        acl_type,
+        page,
+        page_size,
+        self.transmitter.clone(),
+        correlation_id,
+      )
       .await?;
 
     trace!(
       handler = self.transmitter.handler,
-      nid = nid.to_string(),
-      channel = channel_id.to_string(),
-      acl = acl_type.to_string(),
+      nid = %nid,
+      channel = %channel_id,
+      acl = %acl_type,
       "got channel ACL"
     );
 
@@ -688,21 +701,20 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
       correlation_id = params.id;
       channel_id = Some(Self::parse_channel_id(&params.channel)?);
     }
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
     let channel_id = channel_id.unwrap();
 
     // Submit the request to get the channel configuration.
     self
       .channel_manager
-      .get_channel_configuration(channel_id.clone(), nid.clone(), transmitter, correlation_id)
+      .get_channel_configuration(channel_id.clone(), nid.clone(), self.transmitter.clone(), correlation_id)
       .await?;
 
     trace!(
       handler = self.transmitter.handler,
-      nid = nid.to_string(),
-      channel = channel_id.to_string(),
+      nid = %nid,
+      channel = %channel_id,
       "got channel configuration"
     );
 
@@ -734,20 +746,27 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
     let acl_type = AclType::from_str(params.r#type.as_ref())?;
     let acl_action = AclAction::from_str(params.action.as_ref())?;
 
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
     // Submit the request to set the channel ACL.
     self
       .channel_manager
-      .set_channel_acl(channel_id.clone(), nid.clone(), nids, acl_type, acl_action, transmitter, correlation_id)
+      .set_channel_acl(
+        channel_id.clone(),
+        nid.clone(),
+        nids,
+        acl_type,
+        acl_action,
+        self.transmitter.clone(),
+        correlation_id,
+      )
       .await?;
 
     trace!(
       handler = self.transmitter.handler,
-      nid = nid.to_string(),
-      channel = channel_id.to_string(),
-      acl = acl_type.to_string(),
+      nid = %nid,
+      channel = %channel_id,
+      acl = %acl_type,
       "set channel ACL"
     );
 
@@ -797,21 +816,26 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
       );
     }
 
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
     let channel_id = channel_id.unwrap();
 
     // Submit the request to set the channel configuration.
     self
       .channel_manager
-      .set_channel_configuration(channel_config, channel_id.clone(), nid.clone(), transmitter, correlation_id)
+      .set_channel_configuration(
+        channel_config,
+        channel_id.clone(),
+        nid.clone(),
+        self.transmitter.clone(),
+        correlation_id,
+      )
       .await?;
 
     trace!(
       handler = self.transmitter.handler,
-      nid = nid.to_string(),
-      channel = channel_id.to_string(),
+      nid = %nid,
+      channel = %channel_id,
       "set channel configuration"
     );
 
@@ -855,19 +879,20 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
         on_behalf_nid = Some(Self::parse_nid(&nid_str)?);
       }
     }
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
+
+    let channel_id = channel_id.unwrap();
 
     // Submit the request to join the channel.
     let as_owner = self
       .channel_manager
-      .join_channel(channel_id.as_ref().unwrap().clone(), nid.clone(), on_behalf_nid, transmitter, correlation_id)
+      .join_channel(channel_id.clone(), nid.clone(), on_behalf_nid, self.transmitter.clone(), correlation_id)
       .await?;
 
     trace!(
       handler = self.transmitter.handler,
-      nid = nid.to_string(),
-      channel = channel_id.unwrap().to_string(),
+      nid = %nid,
+      channel = %channel_id,
       as_owner = as_owner,
       "joined channel"
     );
@@ -901,17 +926,14 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
     let correlation_id = params.id;
     let channel_id = Self::parse_channel_id(&params.channel)?;
 
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
-    self.channel_manager.delete_channel(channel_id.clone(), nid.clone(), transmitter, correlation_id).await?;
+    self
+      .channel_manager
+      .delete_channel(channel_id.clone(), nid.clone(), self.transmitter.clone(), correlation_id)
+      .await?;
 
-    trace!(
-      handler = self.transmitter.handler,
-      nid = nid.to_string(),
-      channel = channel_id.to_string(),
-      "deleted channel"
-    );
+    trace!(handler = self.transmitter.handler, nid = %nid, channel = %channel_id, "deleted channel");
 
     Ok(())
   }
@@ -949,18 +971,17 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
         on_behalf_nid = Some(Self::parse_nid(&nid_str)?);
       }
     }
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
     let channel_id = channel_id.unwrap();
 
     // Submit the request to leave the channel.
     self
       .channel_manager
-      .leave_channel(channel_id.clone(), nid.clone(), on_behalf_nid, Some(transmitter), correlation_id)
+      .leave_channel(channel_id.clone(), nid.clone(), on_behalf_nid, Some(self.transmitter.clone()), correlation_id)
       .await?;
 
-    trace!(handler = self.transmitter.handler, nid = nid.to_string(), channel = channel_id.to_string(), "left channel");
+    trace!(handler = self.transmitter.handler, nid = %nid, channel = %channel_id, "left channel");
 
     Ok(())
   }
@@ -990,13 +1011,15 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
       count = params.page_size;
       as_owner = params.owner;
     }
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
     // Submit the request to list the channels.
-    self.channel_manager.list_channels(nid.clone(), page, count, as_owner, transmitter, correlation_id).await?;
+    self
+      .channel_manager
+      .list_channels(nid.clone(), page, count, as_owner, self.transmitter.clone(), correlation_id)
+      .await?;
 
-    trace!(handler = self.transmitter.handler, nid = nid.to_string(), as_owner = as_owner, "listed channels");
+    trace!(handler = self.transmitter.handler, nid = %nid, as_owner = as_owner, "listed channels");
 
     Ok(())
   }
@@ -1030,23 +1053,17 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
       page = params.page;
       count = params.page_size;
     }
-    let nid = self.nid.as_ref().unwrap().clone();
-    let transmitter = self.transmitter.clone();
+    let nid = self.nid.as_ref().unwrap();
 
     let channel_id = channel_id.unwrap();
 
     // Submit the request to list the members.
     self
       .channel_manager
-      .list_members(channel_id.clone(), nid.clone(), page, count, transmitter, correlation_id)
+      .list_members(channel_id.clone(), nid.clone(), page, count, self.transmitter.clone(), correlation_id)
       .await?;
 
-    trace!(
-      handler = self.transmitter.handler,
-      nid = nid.to_string(),
-      channel = channel_id.to_string(),
-      "listed members"
-    );
+    trace!(handler = self.transmitter.handler, nid = %nid, channel = %channel_id, "listed members");
 
     Ok(())
   }
@@ -1088,19 +1105,18 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
       }
     };
 
-    let nid = self.nid.as_ref().unwrap().clone();
+    let nid = self.nid.as_ref().unwrap();
 
     let request = SendPrivatePayloadRequest { payload, from: nid.username.clone() };
     let response = modulator.send_private_payload(request).await?;
     if matches!(response.result, SendPrivatePayloadResult::Invalid) {
       return Err(narwhal_protocol::Error::new(BadRequest).with_id(correlation_id).into());
     }
-    let transmitter = self.transmitter.clone();
 
     // Send the response back to the client.
-    transmitter.send_message(Message::ModDirectAck(ModDirectAckParameters { id: correlation_id }));
+    self.transmitter.send_message(Message::ModDirectAck(ModDirectAckParameters { id: correlation_id }));
 
-    trace!(handler = transmitter.handler, nid = nid.to_string(), "modulator payload forwarded");
+    trace!(handler = self.transmitter.handler, nid = %nid, "modulator payload forwarded");
 
     Ok(())
   }

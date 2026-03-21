@@ -84,12 +84,20 @@ impl GlobalRouter {
       }
     };
 
-    for target in targets {
+    let mut targets_iter = targets.into_iter().peekable();
+    while let Some(target) = targets_iter.next() {
+      let is_last = targets_iter.peek().is_none();
+
       if target.domain == local_domain {
-        self
-          .c2s_router
-          .route_to(msg.clone(), payload_opt.clone(), target.username.clone(), excluding_local_handler)
-          .await?;
+        if is_last {
+          self.c2s_router.route_to(msg, payload_opt, target.username.clone(), excluding_local_handler).await?;
+          return Ok(());
+        } else {
+          self
+            .c2s_router
+            .route_to(msg.clone(), payload_opt.clone(), target.username.clone(), excluding_local_handler)
+            .await?;
+        }
       } else {
         // TODO(ortuman): Implement S2S routing
       }
