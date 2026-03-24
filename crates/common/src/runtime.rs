@@ -44,16 +44,27 @@ mod monoio_impl {
     monoio::time::timeout(duration, future).await.map_err(|_| ())
   }
 
-  /// Runs a future on a new runtime instance.
+  /// Creates a new runtime instance and runs a future to completion on it.
+  ///
+  /// Returns an error if the runtime fails to initialize.
+  pub fn try_block_on<F>(future: F) -> std::io::Result<F::Output>
+  where
+    F: Future,
+  {
+    let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new().enable_all().build()?;
+    Ok(rt.block_on(future))
+  }
+
+  /// Creates a new runtime instance and runs a future to completion on it.
+  ///
+  /// # Panics
+  ///
+  /// Panics if the runtime fails to initialize.
   pub fn block_on<F>(future: F) -> F::Output
   where
     F: Future,
   {
-    let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new()
-      .enable_all()
-      .build()
-      .expect("failed to create monoio runtime");
-    rt.block_on(future)
+    try_block_on(future).expect("failed to create runtime")
   }
 }
 

@@ -124,7 +124,7 @@ pub fn init(config: &Config) -> anyhow::Result<MetricsRegistry> {
   Ok(registry)
 }
 
-/// Spawns the Prometheus scrape endpoint on the current monoio runtime.
+/// Spawns the Prometheus scrape endpoint on the current async runtime.
 ///
 /// If metrics are disabled in the configuration, this is a no-op.
 fn start_scrape_endpoint(config: &MetricsConfig, registry: MetricsRegistry) -> anyhow::Result<()> {

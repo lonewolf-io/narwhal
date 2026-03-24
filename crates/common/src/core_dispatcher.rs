@@ -85,7 +85,7 @@ impl CoreDispatcher {
             let _ = core_affinity::set_for_current(core_id);
           }
 
-          runtime::block_on(async move {
+          runtime::try_block_on(async move {
             // Spawn a task that drains incoming work from the task channel.
             runtime::spawn_detached(async move {
               while let Ok(f) = task_rx.recv().await {
@@ -98,7 +98,8 @@ impl CoreDispatcher {
 
             // Keep the runtime alive until shutdown signal.
             let _ = shutdown_rx.recv().await;
-          });
+          })
+          .map_err(|e| anyhow!("failed to create runtime for worker {}: {}", worker_id, e))?;
 
           trace!(worker_id, "core worker thread stopped");
 
