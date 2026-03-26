@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use compio::buf::{IoBuf, IoBufMut, IntoInner, SetLen};
+use compio::buf::{IntoInner, IoBuf, IoBufMut, SetLen};
 use compio::io::AsyncRead;
 
 use crate::pool::MutablePoolBuffer;

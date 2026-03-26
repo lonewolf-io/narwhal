@@ -13,7 +13,7 @@ use std::time::Duration;
 use anyhow::anyhow;
 use async_channel::{Receiver, Sender, bounded};
 use async_lock::{Mutex, Semaphore};
-use compio::buf::{IoBuf, IoBufMut, IntoInner};
+use compio::buf::{IntoInner, IoBuf, IoBufMut};
 use compio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use futures::FutureExt;
 use futures_channel::oneshot;
