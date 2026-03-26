@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
+use std::future::Future;
 use std::time::Duration;
 
 use rand::RngExt;
@@ -118,6 +119,8 @@ impl ExponentialBackoff {
   /// # Arguments
   ///
   /// * `operation` - A closure that returns a future resolving to `Result<T, E>`
+  /// * `sleep` - A function that returns a future that resolves after the given duration,
+  ///   provided by the caller so that the appropriate runtime's timer is used
   ///
   /// # Returns
   ///
@@ -130,10 +133,14 @@ impl ExponentialBackoff {
   /// * `Fut` - The future type returned by the closure
   /// * `T` - The success type
   /// * `E` - The error type
-  pub async fn retry_with_backoff<F, Fut, T, E>(&self, mut operation: F) -> Result<T, E>
+  /// * `S` - The sleep function type
+  /// * `SFut` - The future type returned by the sleep function
+  pub async fn retry_with_backoff<F, Fut, T, E, S, SFut>(&self, mut operation: F, sleep: S) -> Result<T, E>
   where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T, E>>,
+    S: Fn(Duration) -> SFut,
+    SFut: Future<Output = ()>,
   {
     let mut delay = self.initial_delay;
     let mut last_error: Option<E> = None;
@@ -159,7 +166,7 @@ impl ExponentialBackoff {
           };
 
           // Wait for the current delay before retrying
-          compio::runtime::time::sleep(actual_delay).await;
+          sleep(actual_delay).await;
 
           // Calculate next delay with exponential backoff
           let next_delay = Duration::from_secs_f64(delay.as_secs_f64() * self.factor);
@@ -246,7 +253,7 @@ mod tests {
     let backoff = ExponentialBackoff::new();
     let mock_op = MockOperation::new(0); // Succeed immediately
 
-    let result = backoff.retry_with_backoff(|| mock_op.call()).await;
+    let result = backoff.retry_with_backoff(|| mock_op.call(), compio::runtime::time::sleep).await;
 
     assert!(result.is_ok());
     assert_eq!(mock_op.call_count(), 1);
@@ -258,7 +265,7 @@ mod tests {
 
     let mock_op = MockOperation::new(2); // Fail twice, succeed on third
 
-    let result = backoff.retry_with_backoff(|| mock_op.call()).await;
+    let result = backoff.retry_with_backoff(|| mock_op.call(), compio::runtime::time::sleep).await;
 
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), "success on attempt 3");
@@ -271,7 +278,7 @@ mod tests {
 
     let mock_op = MockOperation::new(999); // Always fail
 
-    let result = backoff.retry_with_backoff(|| mock_op.call()).await;
+    let result = backoff.retry_with_backoff(|| mock_op.call(), compio::runtime::time::sleep).await;
 
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), "operation failed");
@@ -286,7 +293,7 @@ mod tests {
     let mock_op = MockOperation::new(999); // Always fail
 
     let start = Instant::now();
-    let _result = backoff.retry_with_backoff(|| mock_op.call()).await;
+    let _result = backoff.retry_with_backoff(|| mock_op.call(), compio::runtime::time::sleep).await;
     let elapsed = start.elapsed();
 
     // Should wait: 20ms + 40ms = 60ms minimum (2 delays between 3 attempts)
@@ -306,7 +313,7 @@ mod tests {
     let mock_op = MockOperation::new(999); // Always fail
 
     let start = Instant::now();
-    let _result = backoff.retry_with_backoff(|| mock_op.call()).await;
+    let _result = backoff.retry_with_backoff(|| mock_op.call(), compio::runtime::time::sleep).await;
     let elapsed = start.elapsed();
 
     assert!(elapsed >= Duration::from_millis(400));

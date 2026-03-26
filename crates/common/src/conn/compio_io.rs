@@ -105,8 +105,17 @@ impl<W: AsyncWrite> ConnWriter for CompioConnWriter<W> {
       return Ok(());
     }
 
-    for buf in batch.drain(..) {
+    if batch.len() == 1 {
+      let buf = batch.drain(..).next().unwrap();
       let compio::buf::BufResult(result, _) = self.writer.write_all(buf).await;
+      result.map_err(|e| anyhow!(e))?;
+    } else {
+      let total_len: usize = batch.iter().map(|b| b.len()).sum();
+      let mut coalesced = Vec::with_capacity(total_len);
+      for buf in batch.drain(..) {
+        coalesced.extend_from_slice(&buf);
+      }
+      let compio::buf::BufResult(result, _) = self.writer.write_all(coalesced).await;
       result.map_err(|e| anyhow!(e))?;
     }
 

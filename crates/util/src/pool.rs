@@ -548,16 +548,18 @@ mod pool_tests {
 
     for i in 0..10 {
       let pool_clone = pool.clone();
-      let handle = thread::spawn(async move || {
-        let mut buf = pool_clone.acquire_buffer().await;
-        buf.as_mut_slice()[0] = i as u8;
-        assert_eq!(buf.as_slice()[0], i as u8);
+      let handle = thread::spawn(move || {
+        crate::runtime_block_on(async move {
+          let mut buf = pool_clone.acquire_buffer().await;
+          buf.as_mut_slice()[0] = i as u8;
+          assert_eq!(buf.as_slice()[0], i as u8);
+        });
       });
       handles.push(handle);
     }
 
     for handle in handles {
-      handle.join().unwrap().await;
+      handle.join().unwrap();
     }
 
     // All buffers should be returned

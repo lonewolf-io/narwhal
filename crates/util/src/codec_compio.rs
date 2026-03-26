@@ -269,3 +269,269 @@ impl<R: AsyncRead> StreamReader<R> {
     }
   }
 }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  use compio::buf::{BufResult, IoBufMut, SetLen};
+  use compio::io::AsyncRead;
+
+  use crate::pool::Pool;
+
+  /// Mock reader that returns data in chunks.
+  struct MockChunkedReader {
+    chunks: Vec<Vec<u8>>,
+    current_chunk: usize,
+    position: usize,
+  }
+
+  impl MockChunkedReader {
+    fn new(chunks: Vec<Vec<u8>>) -> Self {
+      Self { chunks, current_chunk: 0, position: 0 }
+    }
+  }
+
+  impl AsyncRead for MockChunkedReader {
+    async fn read<B: IoBufMut>(&mut self, mut buf: B) -> BufResult<usize, B> {
+      if self.current_chunk >= self.chunks.len() {
+        return BufResult(Ok(0), buf); // EOF
+      }
+
+      let current_data = &self.chunks[self.current_chunk];
+      let remaining = current_data.len() - self.position;
+      let available_space = buf.buf_capacity();
+      let to_copy = std::cmp::min(available_space, remaining);
+
+      if to_copy > 0 {
+        unsafe {
+          let dst = buf.as_uninit().as_mut_ptr() as *mut u8;
+          std::ptr::copy_nonoverlapping(current_data[self.position..].as_ptr(), dst, to_copy);
+          buf.set_len(to_copy);
+        }
+      }
+
+      let current_data_len = current_data.len();
+      self.position += to_copy;
+      if self.position >= current_data_len {
+        self.current_chunk += 1;
+        self.position = 0;
+      }
+
+      BufResult(Ok(to_copy), buf)
+    }
+  }
+
+  #[compio::test]
+  async fn test_empty_lines() {
+    let mock_reader = MockChunkedReader::new(vec![b"\n\n".to_vec(), b"non-empty line\n".to_vec(), b"\n".to_vec()]);
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // First two lines should be empty
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), b"");
+
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), b"");
+
+    // Then a non-empty line
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), b"non-empty line");
+
+    // And another empty line
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), b"");
+
+    // Then EOF
+    assert!(!reader.next().await.unwrap());
+  }
+
+  #[compio::test]
+  async fn test_max_line_length() {
+    // Create a small buffer of 10 bytes
+    let pool = Pool::new(1, 10);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    // Create a reader with a line longer than the buffer
+    let mock_reader = MockChunkedReader::new(vec![b"This line is definitely longer than 10 bytes\n".to_vec()]);
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // Should result in MaxLineLengthExceeded error
+    let result = reader.next().await;
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(err.to_string().contains("max line length exceeded"));
+  }
+
+  #[compio::test]
+  async fn test_multibyte_utf8() {
+    // Japanese, emoji, and other multi-byte characters
+    let mock_reader = MockChunkedReader::new(vec![
+      "こんにちは\n".as_bytes().to_vec(),
+      "Hello 🌍\n".as_bytes().to_vec(),
+      "Привет мир\n".as_bytes().to_vec(),
+    ]);
+
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    assert!(reader.next().await.is_ok());
+    assert_eq!(reader.get_line().unwrap(), "こんにちは".as_bytes());
+
+    assert!(reader.next().await.is_ok());
+    assert_eq!(reader.get_line().unwrap(), "Hello 🌍".as_bytes());
+
+    assert!(reader.next().await.is_ok());
+    assert_eq!(reader.get_line().unwrap(), "Привет мир".as_bytes());
+  }
+
+  #[compio::test]
+  async fn test_partial_reads() {
+    let mock_reader = MockChunkedReader::new(vec![
+      b"Partial ".to_vec(),
+      b"line without ".to_vec(),
+      b"ending yet".to_vec(),
+      b"\nSecond line\n".to_vec(),
+    ]);
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let reader = mock_reader;
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(reader, pool_buffer);
+
+    // First call should eventually return the complete line once we have a newline.
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), "Partial line without ending yet".as_bytes());
+
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), "Second line".as_bytes());
+  }
+
+  #[compio::test]
+  async fn test_exact_buffer_size() {
+    // Create a buffer and a line of exactly the same size
+    let buffer_size = 10;
+    let pool = Pool::new(1, buffer_size);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    // Exactly 10 bytes
+    let mock_reader = MockChunkedReader::new(vec![b"123456789".to_vec(), b"\n".to_vec()]);
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // Should successfully read exactly buffer-sized line.
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), "123456789".as_bytes());
+  }
+
+  #[compio::test]
+  async fn test_read_raw_with_buffered_data() {
+    // Test reading raw bytes when there's buffered data after a line read
+    let mock_reader = MockChunkedReader::new(vec![b"first line\nRAW_DATA_HERE".to_vec()]);
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // Read the first line
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), b"first line");
+
+    // Now read raw bytes - should use the buffered data
+    let buf = vec![0u8; 13];
+    let result = reader.read_raw(buf, 13).await.unwrap();
+    assert_eq!(&result[..], b"RAW_DATA_HERE");
+  }
+
+  #[compio::test]
+  async fn test_read_raw_direct_read() {
+    // Test reading raw bytes when buffer is empty (direct read from reader)
+    let mock_reader = MockChunkedReader::new(vec![b"DIRECT_RAW_DATA".to_vec()]);
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // Read raw bytes directly without reading a line first
+    let buf = vec![0u8; 15];
+    let result = reader.read_raw(buf, 15).await.unwrap();
+    assert_eq!(&result[..], b"DIRECT_RAW_DATA");
+  }
+
+  #[compio::test]
+  async fn test_read_raw_spanning_chunks() {
+    // Test reading raw bytes that span across buffered data and multiple reads
+    let mock_reader = MockChunkedReader::new(vec![b"line\nBUFFERED".to_vec(), b"_THEN_".to_vec(), b"READ".to_vec()]);
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // Read the line first
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), b"line");
+
+    // Read raw bytes that will use buffered data and then read more
+    let buf = vec![0u8; 18];
+    let result = reader.read_raw(buf, 18).await.unwrap();
+    assert_eq!(&result[..], b"BUFFERED_THEN_READ");
+  }
+
+  #[compio::test]
+  async fn test_read_raw_eof() {
+    // Test reading raw bytes when there's not enough data (EOF)
+    let mock_reader = MockChunkedReader::new(vec![b"short".to_vec()]);
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // Try to read more bytes than available
+    let buf = vec![0u8; 100];
+    let result = reader.read_raw(buf, 100).await;
+    assert!(result.is_err());
+    assert!(result.unwrap_err().to_string().contains("EOF"));
+  }
+
+  #[compio::test]
+  async fn test_read_raw_partial_buffered() {
+    // Test reading raw bytes where some data is buffered and some needs to be read
+    let mock_reader = MockChunkedReader::new(vec![b"first\nsecond\nthird".to_vec(), b"_part".to_vec()]);
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // Read first line
+    assert!(reader.next().await.unwrap());
+    assert_eq!(reader.get_line().unwrap(), b"first");
+
+    // Read 15 bytes raw - "second\nthird" (13 bytes) is buffered, need 2 more from next chunk
+    let buf = vec![0u8; 15];
+    let result = reader.read_raw(buf, 15).await.unwrap();
+    assert_eq!(&result[..], b"second\nthird_pa");
+  }
+
+  #[compio::test]
+  async fn test_read_raw_respects_len_not_capacity() {
+    // Provide a single chunk with more data than we'll request
+    let mock_reader = MockChunkedReader::new(vec![b"ABCDextra".to_vec()]);
+    let pool = Pool::new(1, 1024);
+    let pool_buffer = pool.acquire_buffer().await;
+
+    let mut reader = StreamReader::<MockChunkedReader>::with_pool_buffer(mock_reader, pool_buffer);
+
+    // Create a buffer with capacity 9, but only request 4 bytes.
+    let buf = Vec::with_capacity(9);
+    let result = reader.read_raw(buf, 4).await.unwrap();
+
+    assert_eq!(result.len(), 4, "read_raw should return exactly `len` bytes, not more");
+    assert_eq!(&result[..], b"ABCD");
+  }
+}

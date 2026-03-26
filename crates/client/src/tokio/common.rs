@@ -365,7 +365,7 @@ where
       .with_max_delay(self.config.backoff_max_delay)
       .with_jitter(true)
       .with_max_attempts(self.config.backoff_max_retries)
-      .retry_with_backoff(|| async { self.create_connection().await })
+      .retry_with_backoff(|| async { self.create_connection().await }, ::tokio::time::sleep)
       .await?;
 
     let conn = Arc::new(conn);
@@ -387,7 +387,7 @@ where
       .with_max_delay(self.config.backoff_max_delay)
       .with_jitter(true)
       .with_max_attempts(self.config.backoff_max_retries)
-      .retry_with_backoff(|| async { self.get_connection_from_pool(conn_pool).await })
+      .retry_with_backoff(|| async { self.get_connection_from_pool(conn_pool).await }, ::tokio::time::sleep)
       .await
   }
 
