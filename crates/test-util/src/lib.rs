@@ -19,12 +19,9 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::anyhow;
-use monoio::BufResult;
-use monoio::buf::{IoBuf, IoBufMut, IoVecBuf, IoVecBufMut};
-use monoio::io::{AsyncReadRent, AsyncWriteRent, AsyncWriteRentExt};
-
+use narwhal_common::runtime;
 use narwhal_protocol::{Message, deserialize, serialize};
-use narwhal_util::{codec_monoio::StreamReader, pool::MutablePoolBuffer};
+use narwhal_util::pool::MutablePoolBuffer;
 
 /// A testing macro for asserting that a message matches an expected type and parameters.
 ///
@@ -60,15 +57,15 @@ macro_rules! assert_message {
   };
 }
 
-/// A lock-free shared stream wrapper for monoio's single-threaded runtime.
+/// A lock-free shared stream wrapper for single-threaded completion-based runtimes.
 ///
 /// Multiple clones of a `LocalStream` share the same underlying stream via
 /// `Rc<UnsafeCell<S>>`.
 ///
 /// # Safety
 ///
-/// Only safe within a **single-threaded**, cooperative async runtime like
-/// monoio. Because only one task ever executes at a time, the two halves
+/// Only safe within a **single-threaded**, cooperative async runtime.
+/// Because only one task ever executes at a time, the two halves
 /// never actually access the inner stream concurrently.
 struct LocalStream<S>(Rc<UnsafeCell<S>>);
 
@@ -84,58 +81,53 @@ impl<S> Clone for LocalStream<S> {
   }
 }
 
-impl<S: AsyncReadRent> AsyncReadRent for LocalStream<S> {
-  async fn read<B: IoBufMut>(&mut self, buf: B) -> BufResult<usize, B> {
-    // SAFETY: monoio is single-threaded and cooperative – only one task
-    // executes at any point, so no concurrent mutable access can occur.
-    let stream = unsafe { &mut *self.0.get() };
-    stream.read(buf).await
+mod compio_impls {
+  use super::*;
+  use compio::buf::{IoBuf, IoBufMut};
+  use compio::io::{AsyncRead, AsyncWrite};
+
+  impl<S: AsyncRead> AsyncRead for LocalStream<S> {
+    async fn read<B: IoBufMut>(&mut self, buf: B) -> compio::buf::BufResult<usize, B> {
+      let stream = unsafe { &mut *self.0.get() };
+      stream.read(buf).await
+    }
   }
 
-  async fn readv<B: IoVecBufMut>(&mut self, buf: B) -> BufResult<usize, B> {
-    let stream = unsafe { &mut *self.0.get() };
-    stream.readv(buf).await
+  impl<S: AsyncWrite> AsyncWrite for LocalStream<S> {
+    async fn write<B: IoBuf>(&mut self, buf: B) -> compio::buf::BufResult<usize, B> {
+      let stream = unsafe { &mut *self.0.get() };
+      stream.write(buf).await
+    }
+
+    async fn flush(&mut self) -> std::io::Result<()> {
+      let stream = unsafe { &mut *self.0.get() };
+      stream.flush().await
+    }
+
+    async fn shutdown(&mut self) -> std::io::Result<()> {
+      let stream = unsafe { &mut *self.0.get() };
+      stream.shutdown().await
+    }
   }
 }
 
-impl<S: AsyncWriteRent> AsyncWriteRent for LocalStream<S> {
-  async fn write<B: IoBuf>(&mut self, buf: B) -> BufResult<usize, B> {
-    let stream = unsafe { &mut *self.0.get() };
-    stream.write(buf).await
-  }
-
-  async fn writev<B: IoVecBuf>(&mut self, buf: B) -> BufResult<usize, B> {
-    let stream = unsafe { &mut *self.0.get() };
-    stream.writev(buf).await
-  }
-
-  async fn flush(&mut self) -> std::io::Result<()> {
-    let stream = unsafe { &mut *self.0.get() };
-    stream.flush().await
-  }
-
-  async fn shutdown(&mut self) -> std::io::Result<()> {
-    let stream = unsafe { &mut *self.0.get() };
-    stream.shutdown().await
-  }
-}
+type TestStreamReader<S> = narwhal_util::codec_compio::StreamReader<LocalStream<S>>;
 
 /// A test connection wrapper for async streams that provides message-based communication.
 ///
-/// Uses monoio's `AsyncReadRent` / `AsyncWriteRent` traits and a `LocalStream` wrapper
-/// to share the underlying stream between reader and writer halves without
-/// splitting.
+/// Uses a `LocalStream` wrapper to share the underlying stream between reader and writer
+/// halves without splitting.
 ///
 /// # Type Parameters
 ///
-/// * `S` - Any type that implements both monoio `AsyncReadRent` and `AsyncWriteRent`,
-///   typically network streams like `TcpStream` or `ClientTlsStream<TcpStream>`
-pub struct TestConn<S: AsyncReadRent + AsyncWriteRent> {
+/// * `S` - Any type that implements the runtime's async read/write traits,
+///   typically network streams like `TcpStream` or TLS-wrapped streams
+pub struct TestConn<S> {
   /// The writer handle (a clone of the shared stream).
   writer: LocalStream<S>,
 
-  /// The reader handle, wrapped in a monoio-compatible `StreamReader`.
-  reader: StreamReader<LocalStream<S>>,
+  /// The reader handle, wrapped in a runtime-specific `StreamReader`.
+  reader: TestStreamReader<S>,
 
   /// Buffer for serialising outbound messages.
   write_buffer: Vec<u8>,
@@ -143,49 +135,27 @@ pub struct TestConn<S: AsyncReadRent + AsyncWriteRent> {
 
 // === impl TestConn ===
 
-impl<S: AsyncReadRent + AsyncWriteRent> TestConn<S> {
+impl<S: compio::io::AsyncRead + compio::io::AsyncWrite> TestConn<S> {
   /// Creates a new `TestConn` instance from an async stream.
-  ///
-  /// The stream is wrapped in a `LocalStream` so that a reader and a writer
-  /// can share it without requiring a `split()` operation.
-  ///
-  /// # Arguments
-  ///
-  /// * `stream` - An async stream that implements both `AsyncReadRent` and `AsyncWriteRent`
-  /// * `read_buffer` - Buffer for reading messages.
-  /// * `max_message_size` - Maximum size in bytes for messages that can be sent/received
-  ///
-  /// # Returns
-  ///
-  /// A new `TestConn` instance ready for message communication.
   pub fn new(stream: S, read_buffer: MutablePoolBuffer, max_message_size: usize) -> Self {
     let local_stream = LocalStream::new(stream);
     let reader_stream = local_stream.clone();
 
     let write_buffer = vec![0u8; max_message_size];
-    let stream_reader = StreamReader::with_pool_buffer(reader_stream, read_buffer);
+    let stream_reader = narwhal_util::codec_compio::StreamReader::with_pool_buffer(reader_stream, read_buffer);
 
     Self { writer: local_stream, reader: stream_reader, write_buffer }
   }
 
   /// Serializes and sends a message over the connection.
-  ///
-  /// # Arguments
-  ///
-  /// * `message` - The message to be sent, implementing the `Message` trait
-  ///
-  /// # Returns
-  ///
-  /// * `Ok(())` - If the message was successfully sent
-  /// * `Err(anyhow::Error)` - If serialization failed or there was an I/O error
   pub async fn write_message(&mut self, message: Message) -> anyhow::Result<()> {
-    let n = serialize(&message, &mut self.write_buffer)?;
+    use compio::io::{AsyncWrite, AsyncWriteExt};
 
-    // Copy into an owned buffer because monoio's IoBuf requires ownership.
+    let n = serialize(&message, &mut self.write_buffer)?;
     let data = self.write_buffer[..n].to_vec();
 
-    let (result, _) = self.writer.write_all(data).await;
-    result?;
+    let compio::buf::BufResult(result, _) = self.writer.write_all(data).await;
+    result.map_err(|e| anyhow!(e))?;
     self.writer.flush().await?;
 
     Ok(())
@@ -197,13 +167,10 @@ impl<S: AsyncReadRent + AsyncWriteRent> TestConn<S> {
   }
 
   /// Reads and deserializes a message from the connection with a custom timeout.
-  ///
-  /// Returns `Ok(Some(msg))` if a message was received, `Ok(None)` on timeout,
-  /// or `Err` on I/O or deserialization errors.
   pub async fn try_read_message(&mut self, timeout: Duration) -> anyhow::Result<Option<Message>> {
     let reader = &mut self.reader;
 
-    let line = match monoio::time::timeout(timeout, reader.next()).await {
+    let line = match runtime::timeout(timeout, reader.next()).await {
       Ok(Ok(true)) => reader.get_line().unwrap(),
       Ok(Ok(false)) => return Err(anyhow!("no message received")),
       Ok(Err(e)) => return Err(anyhow!("error reading from stream: {}", e)),
@@ -211,48 +178,22 @@ impl<S: AsyncReadRent + AsyncWriteRent> TestConn<S> {
     };
 
     let msg = deserialize(Cursor::new(line))?;
-
     Ok(Some(msg))
   }
 
   /// Writes raw bytes directly to the connection without any encoding or framing.
-  ///
-  /// This method bypasses the message serialization system and writes the provided
-  /// byte slice directly to the underlying stream.
-  ///
-  /// # Arguments
-  ///
-  /// * `data` - A byte slice containing the raw data to be sent
-  ///
-  /// # Returns
-  ///
-  /// * `Ok(())` - If the data was successfully written and flushed
-  /// * `Err(anyhow::Error)` - If there was an I/O error during writing or flushing
   pub async fn write_raw_bytes(&mut self, data: &[u8]) -> anyhow::Result<()> {
-    // Copy into an owned buffer because monoio's IoBuf requires ownership.
-    let data = data.to_vec();
+    use compio::io::{AsyncWrite, AsyncWriteExt};
 
-    let (result, _) = self.writer.write_all(data).await;
-    result?;
+    let data = data.to_vec();
+    let compio::buf::BufResult(result, _) = self.writer.write_all(data).await;
+    result.map_err(|e| anyhow!(e))?;
     self.writer.flush().await?;
 
     Ok(())
   }
 
   /// Reads raw bytes directly from the connection into the provided buffer.
-  ///
-  /// This method bypasses the message deserialization system and reads raw bytes
-  /// directly from the underlying stream into the provided mutable byte slice.
-  /// The buffer will be filled exactly to its length.
-  ///
-  /// # Arguments
-  ///
-  /// * `data` - A mutable byte slice that will be filled with the read data
-  ///
-  /// # Returns
-  ///
-  /// * `Ok(())` - If the buffer was successfully filled with data from the stream
-  /// * `Err(anyhow::Error)` - If there was an I/O error during reading
   pub async fn read_raw_bytes(&mut self, data: &mut [u8]) -> anyhow::Result<()> {
     let len = data.len();
     let buf = vec![0u8; len];
@@ -264,34 +205,18 @@ impl<S: AsyncReadRent + AsyncWriteRent> TestConn<S> {
   }
 
   /// Gracefully shuts down the connection's write half.
-  ///
-  /// This method closes the write side of the connection, signaling to the remote
-  /// peer that no more data will be sent. This is typically used as part of a
-  /// clean connection termination process.
-  ///
-  /// # Returns
-  ///
-  /// * `Ok(())` - If the shutdown was successful
-  /// * `Err(anyhow::Error)` - If there was an error during the shutdown process
   pub async fn shutdown(&mut self) -> anyhow::Result<()> {
+    use compio::io::AsyncWrite;
+
     self.writer.shutdown().await?;
     Ok(())
   }
 
   /// Asserts that no message is received within the given timeout.
-  ///
-  /// This is useful for verifying that the server does *not* send a message
-  /// in a given time window (e.g. after a disconnect or when rate-limited).
-  ///
-  /// # Returns
-  ///
-  /// * `Ok(())` - If the timeout elapsed without receiving a message
-  /// * `Err(anyhow::Error)` - If a message was unexpectedly received, EOF was
-  ///   reached, or an I/O error occurred
   pub async fn expect_read_timeout(&mut self, timeout: Duration) -> anyhow::Result<()> {
     let reader = &mut self.reader;
 
-    match monoio::time::timeout(timeout, reader.next()).await {
+    match runtime::timeout(timeout, reader.next()).await {
       Ok(Ok(true)) => Err(anyhow!("expected timeout, but received a message")),
       Ok(Ok(false)) => Err(anyhow!("no message received")),
       Ok(Err(e)) => Err(anyhow!("error reading from stream: {}", e)),

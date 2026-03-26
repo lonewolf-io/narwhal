@@ -22,7 +22,7 @@ use narwhal_common::service::{M2sService, S2mService};
 pub use crate::config::*;
 pub use crate::listener::{M2sListener, S2mListener};
 pub use crate::modulator::{Modulator, OutboundPrivatePayload};
-use narwhal_client::monoio::s2m::S2mClient;
+use narwhal_client::compio::s2m::S2mClient;
 
 /// The S2M modulator type.
 pub const S2M_CLIENT_MODULATOR: &str = "s2m";

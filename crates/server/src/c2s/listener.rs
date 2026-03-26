@@ -6,8 +6,9 @@ use std::sync::Arc;
 use anyhow::{Ok, anyhow};
 use async_channel::{Sender, bounded};
 use futures::{FutureExt, select};
-use monoio::net::TcpListener;
-use monoio_rustls::TlsAcceptor;
+use narwhal_common::runtime::TcpListener;
+
+use compio_tls::TlsAcceptor;
 use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;

@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use monoio::io::AsyncWriteRent;
+use narwhal_common::runtime::AsyncWrite;
 use narwhal_protocol::{Message, Nid};
 use narwhal_util::pool::PoolBuffer;
 use narwhal_util::string_atom::StringAtom;
@@ -68,7 +68,7 @@ pub trait MessageLog: 'static {
   /// Streams messages with seq > `from_seq`, ordered by seq ascending, up to `limit` entries,
   /// writing their wire-format representation directly to the given writer.
   /// Returns the number of messages written.
-  async fn write_history<W: AsyncWriteRent>(&self, from_seq: u64, limit: u32, writer: &mut W) -> anyhow::Result<u32>
+  async fn write_history<W: AsyncWrite>(&self, from_seq: u64, limit: u32, writer: &mut W) -> anyhow::Result<u32>
   where
     Self: Sized;
 }
@@ -121,7 +121,7 @@ impl MessageLog for NoopMessageLog {
     Ok(0)
   }
 
-  async fn write_history<W: AsyncWriteRent>(&self, _from_seq: u64, _limit: u32, _writer: &mut W) -> anyhow::Result<u32>
+  async fn write_history<W: AsyncWrite>(&self, _from_seq: u64, _limit: u32, _writer: &mut W) -> anyhow::Result<u32>
   where
     Self: Sized,
   {

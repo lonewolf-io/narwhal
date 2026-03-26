@@ -103,11 +103,11 @@ impl narwhal_modulator::Modulator for PrivatePayloadSender {
     let pool = narwhal_util::pool::Pool::new(1, 4096);
 
     // Spawn a task to send payloads every 5 seconds
-    monoio::spawn(async move {
+    compio::runtime::spawn(async move {
       let mut counter = 0;
 
       loop {
-        monoio::time::sleep(Duration::from_secs(5)).await;
+        compio::runtime::time::sleep(Duration::from_secs(5)).await;
         counter += 1;
 
         // Create a test JSON payload
@@ -137,7 +137,8 @@ impl narwhal_modulator::Modulator for PrivatePayloadSender {
           let _ = sender.try_broadcast(outbound_payload);
         }
       }
-    });
+    })
+    .detach();
 
     Ok(ReceivePrivatePayloadResponse { receiver })
   }
@@ -172,9 +173,7 @@ fn main() {
   let modulator =
     PrivatePayloadSender { target: StringAtom::from(cli.target.unwrap_or_else(|| "test_user".to_string())) };
 
-  let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new().enable_all().build().unwrap();
-
-  rt.block_on(async {
+  compio::runtime::RuntimeBuilder::new().build().unwrap().block_on(async {
     match run_s2m_server(config, modulator).await {
       Ok(_) => {},
       Err(e) => eprintln!("error: {}", e),

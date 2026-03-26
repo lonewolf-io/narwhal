@@ -10,7 +10,7 @@ anyhow = "1.0.100"
 async-trait = "0.1.88"
 clap = { version = "4", features = ["derive"] }
 async-channel = "2"
-monoio = { version = "0.2.4", features = ["signal"] }
+compio = { version = "0.18", features = ["runtime", "time", "net", "io", "macros"] }
 signal-hook = "0.3"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }

@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use narwhal_client::S2mConfig;
-use narwhal_client::monoio::s2m::S2mClient;
+use narwhal_client::compio::s2m::S2mClient;
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::create_s2m_listener;
 use narwhal_modulator::modulator::AuthResult;
@@ -55,7 +55,7 @@ async fn bootstrap_s2m(
   Ok((s2m_client, s2m_ln, core_dispatcher))
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_join_channel_fails_when_store_save_fails() -> anyhow::Result<()> {
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
 
@@ -123,7 +123,7 @@ async fn test_c2s_join_channel_fails_when_store_save_fails() -> anyhow::Result<(
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_broadcast_fails_when_message_log_append_fails() -> anyhow::Result<()> {
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
 
@@ -183,7 +183,7 @@ async fn test_c2s_broadcast_fails_when_message_log_append_fails() -> anyhow::Res
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_set_acl_fails_when_store_save_fails() -> anyhow::Result<()> {
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
 
@@ -270,7 +270,7 @@ async fn test_c2s_set_acl_fails_when_store_save_fails() -> anyhow::Result<()> {
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_set_config_fails_when_store_save_fails() -> anyhow::Result<()> {
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
 
@@ -344,7 +344,7 @@ async fn test_c2s_set_config_fails_when_store_save_fails() -> anyhow::Result<()>
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_leave_channel_fails_when_store_save_fails() -> anyhow::Result<()> {
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
 

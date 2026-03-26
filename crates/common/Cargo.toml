@@ -10,7 +10,7 @@ core_affinity = "0.8.3"
 async-channel = "2.5.0"
 async-trait = "0.1.89"
 libc = "0.2.182"
-monoio = { version = "0.2.4", features = ["bytes"], optional = true }
+compio = { version = "0.18", features = ["runtime", "time", "net", "io", "macros"] }
 futures = "0.3.32"
 tokio-util = { version = "0.7.18", features = ["rt", "codec"] }
 tracing = "0.1.44"
@@ -19,7 +19,3 @@ slab = "0.4.12"
 prometheus-client = "0.24"
 narwhal-protocol = { path = "../protocol" }
 narwhal-util = { path = "../util" }
-
-[features]
-default = ["runtime-monoio"]
-runtime-monoio = ["dep:monoio"]

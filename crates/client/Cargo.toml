@@ -21,11 +21,10 @@ narwhal-util = { path = "../util" }
 tokio = { version = "1.49.0", default-features = false, features = ["io-util", "macros", "net", "time"] }
 tokio-util = { version = "0.7.18", features = ["compat", "rt"] }
 tokio-rustls = { version = "0.26.4" }
-monoio = { version = "0.2.4", features = ["bytes"] }
-monoio-rustls = "0.4.0"
+compio = { version = "0.18", features = ["runtime", "time", "net", "io", "macros"] }
+compio-tls = { version = "0.9", features = ["rustls"] }
 rustls = { version = "0.23.36" }
 webpki-roots = { version = "1.0.6" }
 
 [dev-dependencies]
 narwhal-test-util = { path = "../test-util" }
-monoio = { version = "0.2.4", features = ["macros"] }

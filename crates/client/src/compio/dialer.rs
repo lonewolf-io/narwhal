@@ -4,30 +4,28 @@ use std::fmt;
 use std::sync::Arc;
 
 use anyhow::anyhow;
-use monoio::BufResult;
-use monoio::buf::{IoBuf, IoBufMut, IoVecBuf, IoVecBufMut};
-use monoio::io::{AsyncReadRent, AsyncWriteRent};
-use monoio::net::{TcpStream, UnixStream};
-use rustls::pki_types::ServerName;
+use compio::buf::{IoBuf, IoBufMut};
+use compio::io::{AsyncRead, AsyncWrite};
+use compio::net::{TcpStream, UnixStream};
 
-/// A trait for establishing network connections using monoio I/O.
+/// A trait for establishing network connections using compio I/O.
 ///
-/// This is the monoio counterpart of [`crate::tokio::dialer::Dialer`] which is
+/// This is the compio counterpart of [`crate::tokio::dialer::Dialer`] which is
 /// built on Tokio.
 ///
 /// The trait itself is `Send + Sync` (so it can live inside an `Arc` shared
-/// across threads), but the returned future is `!Send` because monoio
+/// across threads), but the returned future is `!Send` because compio
 /// operations are tied to the calling thread's event loop.
 #[async_trait::async_trait(?Send)]
 pub trait Dialer: Send + Sync + 'static {
   /// The type of stream produced by this dialer.
-  type Stream: AsyncReadRent + AsyncWriteRent + 'static;
+  type Stream: AsyncRead + AsyncWrite + 'static;
 
   /// Opens a new connection.
   async fn dial(&self) -> anyhow::Result<Self::Stream>;
 }
 
-/// A unified stream type for monoio-based TCP and Unix domain socket
+/// A unified stream type for compio-based TCP and Unix domain socket
 /// connections.
 pub enum Stream {
   /// A TCP network connection.
@@ -48,38 +46,22 @@ impl fmt::Debug for Stream {
   }
 }
 
-impl AsyncReadRent for Stream {
-  async fn read<B: IoBufMut>(&mut self, buf: B) -> BufResult<usize, B> {
+impl AsyncRead for Stream {
+  async fn read<B: IoBufMut>(&mut self, buf: B) -> compio::buf::BufResult<usize, B> {
     match self {
       Stream::Tcp(s) => s.read(buf).await,
       #[cfg(unix)]
       Stream::Unix(s) => s.read(buf).await,
     }
   }
-
-  async fn readv<B: IoVecBufMut>(&mut self, buf: B) -> BufResult<usize, B> {
-    match self {
-      Stream::Tcp(s) => s.readv(buf).await,
-      #[cfg(unix)]
-      Stream::Unix(s) => s.readv(buf).await,
-    }
-  }
 }
 
-impl AsyncWriteRent for Stream {
-  async fn write<B: IoBuf>(&mut self, buf: B) -> BufResult<usize, B> {
+impl AsyncWrite for Stream {
+  async fn write<B: IoBuf>(&mut self, buf: B) -> compio::buf::BufResult<usize, B> {
     match self {
       Stream::Tcp(s) => s.write(buf).await,
       #[cfg(unix)]
       Stream::Unix(s) => s.write(buf).await,
-    }
-  }
-
-  async fn writev<B: IoVecBuf>(&mut self, buf: B) -> BufResult<usize, B> {
-    match self {
-      Stream::Tcp(s) => s.writev(buf).await,
-      #[cfg(unix)]
-      Stream::Unix(s) => s.writev(buf).await,
     }
   }
 
@@ -100,7 +82,7 @@ impl AsyncWriteRent for Stream {
   }
 }
 
-/// TCP dialer for monoio.
+/// TCP dialer for compio.
 #[derive(Clone, Debug)]
 pub struct TcpDialer {
   address: String,
@@ -120,7 +102,7 @@ impl Dialer for TcpDialer {
   type Stream = Stream;
 
   async fn dial(&self) -> anyhow::Result<Stream> {
-    let tcp = monoio::net::TcpStream::connect(&self.address)
+    let tcp = compio::net::TcpStream::connect(&self.address)
       .await
       .map_err(|e| anyhow!("failed to connect to {}: {}", self.address, e))?;
     tcp.set_nodelay(true)?;
@@ -129,7 +111,7 @@ impl Dialer for TcpDialer {
   }
 }
 
-/// Unix domain-socket dialer for monoio.
+/// Unix domain-socket dialer for compio.
 #[cfg(unix)]
 #[derive(Clone, Debug)]
 pub struct UnixDialer {
@@ -152,7 +134,7 @@ impl Dialer for UnixDialer {
   type Stream = Stream;
 
   async fn dial(&self) -> anyhow::Result<Stream> {
-    let unix = monoio::net::UnixStream::connect(&self.socket_path)
+    let unix = compio::net::UnixStream::connect(&self.socket_path)
       .await
       .map_err(|e| anyhow!("failed to connect to {}: {}", self.socket_path, e))?;
     Ok(Stream::Unix(unix))
@@ -160,13 +142,13 @@ impl Dialer for UnixDialer {
 }
 
 /// The concrete stream type produced by [`TlsDialer`].
-pub type TlsStream = monoio_rustls::ClientTlsStream<monoio::net::TcpStream>;
+pub type TlsStream = compio_tls::TlsStream<compio::net::TcpStream>;
 
-/// TLS dialer for monoio — produces [`TlsStream`].
+/// TLS dialer for compio — produces [`TlsStream`].
 #[derive(Clone)]
 pub struct TlsDialer {
   address: String,
-  tls_connector: monoio_rustls::TlsConnector,
+  tls_connector: compio_tls::TlsConnector,
   server_name: String,
 }
 
@@ -198,7 +180,7 @@ impl TlsDialer {
         .with_no_client_auth()
     };
 
-    let tls_connector = monoio_rustls::TlsConnector::from(Arc::new(tls_config));
+    let tls_connector = compio_tls::TlsConnector::from(Arc::new(tls_config));
 
     let server_name = address.split(':').next().ok_or_else(|| anyhow!("invalid address format"))?.to_string();
 
@@ -211,16 +193,16 @@ impl Dialer for TlsDialer {
   type Stream = TlsStream;
 
   async fn dial(&self) -> anyhow::Result<TlsStream> {
-    let tcp_stream = monoio::net::TcpStream::connect(&self.address)
+    let tcp_stream = compio::net::TcpStream::connect(&self.address)
       .await
       .map_err(|e| anyhow!("failed to connect to {}: {}", self.address, e))?;
     tcp_stream.set_nodelay(true)?;
 
-    let server_name: ServerName<'static> = ServerName::try_from(self.server_name.clone())
-      .map_err(|e| anyhow!("invalid server name '{}': {}", self.server_name, e))?;
-
-    let tls_stream =
-      self.tls_connector.connect(server_name, tcp_stream).await.map_err(|e| anyhow!("TLS handshake failed: {}", e))?;
+    let tls_stream = self
+      .tls_connector
+      .connect(&self.server_name, tcp_stream)
+      .await
+      .map_err(|e| anyhow!("TLS handshake failed: {}", e))?;
 
     Ok(tls_stream)
   }

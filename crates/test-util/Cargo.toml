@@ -7,8 +7,8 @@ license = "BSD-3-Clause"
 [dependencies]
 anyhow = "1.0.101"
 async-trait = "0.1.89"
-monoio = { version = "0.2.4", features = ["bytes"] }
-monoio-rustls = "0.4.0"
+compio = { version = "0.18", features = ["runtime", "time", "net", "io"] }
+compio-tls = { version = "0.9", features = ["rustls"] }
 futures = "0.3.32"
 async-broadcast = "0.7.2"
 async-channel = "2.5.0"

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use narwhal_client::monoio::s2m::S2mClient;
+use narwhal_client::compio::s2m::S2mClient;
 
 use narwhal_protocol::{
   Message, S2mAuthParameters, S2mForwardBroadcastPayloadParameters, S2mForwardEventParameters, S2mModDirectParameters,

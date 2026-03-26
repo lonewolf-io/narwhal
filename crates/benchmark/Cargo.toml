@@ -13,8 +13,8 @@ anyhow = "1.0.101"
 async-channel = "2.5.0"
 async-lock = "3.4.2"
 clap = { version = "4.5.59", features = ["derive"] }
-monoio = { version = "0.2.4", features = ["bytes"] }
-monoio-rustls = "0.4.0"
+compio = { version = "0.18", features = ["runtime", "time", "net", "io", "macros"] }
+compio-tls = { version = "0.9", features = ["rustls"] }
 futures = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"

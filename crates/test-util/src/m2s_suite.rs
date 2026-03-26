@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use async_broadcast;
-use monoio::net::TcpStream;
+use narwhal_common::runtime::TcpStream;
 
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::{M2sListener, OutboundPrivatePayload};
@@ -94,9 +94,6 @@ impl M2sSuite {
   }
 
   /// Creates a new socket connection to the server without authentication.
-  ///
-  /// Uses `monoio::net::TcpStream` so the returned `TestConn` works
-  /// natively with monoio's completion-based I/O.
   pub async fn socket_connect(&self) -> anyhow::Result<TestConn<TcpStream>> {
     let addr = self.ln.local_address().expect("local address not set");
 

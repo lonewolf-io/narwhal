@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! monoio-based (completion) client implementations.
+//! compio-based (completion) client implementations.
 
 pub mod c2s;
 pub mod common;

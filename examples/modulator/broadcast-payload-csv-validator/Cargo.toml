@@ -13,7 +13,7 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 anyhow = "1.0.98"
 toml = "0.9.8"
 async-channel = "2"
-monoio = { version = "0.2.4", features = ["signal"] }
+compio = { version = "0.18", features = ["runtime", "time", "net", "io", "macros"] }
 signal-hook = "0.3"
 prometheus-client = "0.24"
 narwhal-modulator = { path = "../../../crates/modulator" }

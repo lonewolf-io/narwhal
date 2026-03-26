@@ -157,9 +157,7 @@ fn main() {
 
   let modulator = PlainAuthenticator {};
 
-  let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new().enable_all().build().unwrap();
-
-  rt.block_on(async {
+  compio::runtime::RuntimeBuilder::new().build().unwrap().block_on(async {
     match run_s2m_server(config, modulator).await {
       Ok(_) => {},
       Err(e) => eprintln!("error: {}", e),

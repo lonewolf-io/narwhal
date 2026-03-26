@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
 use anyhow::anyhow;
-use monoio::io::AsyncWriteRentExt;
-use monoio::net::TcpListener;
+use narwhal_common::runtime::{AsyncWriteExt, TcpListener};
 use prometheus_client::registry::Registry;
 use serde::{Deserialize, Serialize};
 use std::io::stdout;

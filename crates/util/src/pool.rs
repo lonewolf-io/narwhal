@@ -7,7 +7,6 @@ use std::sync::Arc;
 
 use bytes::BytesMut;
 use crossbeam_queue::ArrayQueue;
-use monoio::buf::{IoBuf, IoBufMut};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 /// A generic buffer pool that allows sharing buffers across threads.
@@ -381,29 +380,27 @@ impl DerefMut for MutablePoolBuffer {
   }
 }
 
-unsafe impl IoBuf for MutablePoolBuffer {
-  fn read_ptr(&self) -> *const u8 {
-    self.0.data.as_ref().unwrap().as_ptr()
-  }
-
-  fn bytes_init(&self) -> usize {
-    self.0.data.as_ref().unwrap().len()
+impl compio::buf::IoBuf for MutablePoolBuffer {
+  fn as_init(&self) -> &[u8] {
+    let data = self.0.data.as_ref().unwrap();
+    &data[..data.len()]
   }
 }
 
-unsafe impl IoBufMut for MutablePoolBuffer {
-  fn write_ptr(&mut self) -> *mut u8 {
-    self.0.data.as_mut().unwrap().as_mut_ptr()
-  }
-
-  fn bytes_total(&mut self) -> usize {
-    self.0.data.as_ref().unwrap().capacity()
-  }
-
-  unsafe fn set_init(&mut self, pos: usize) {
+impl compio::buf::SetLen for MutablePoolBuffer {
+  unsafe fn set_len(&mut self, len: usize) {
     unsafe {
-      self.0.data.as_mut().unwrap().set_len(pos);
+      self.0.data.as_mut().unwrap().set_len(len);
     }
+  }
+}
+
+impl compio::buf::IoBufMut for MutablePoolBuffer {
+  fn as_uninit(&mut self) -> &mut [std::mem::MaybeUninit<u8>] {
+    let data = self.0.data.as_mut().unwrap();
+    let cap = data.capacity();
+    // SAFETY: BytesMut capacity memory is allocated and valid for MaybeUninit<u8>
+    unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut std::mem::MaybeUninit<u8>, cap) }
   }
 }
 
@@ -460,22 +457,19 @@ impl Deref for PoolBuffer {
   }
 }
 
-unsafe impl IoBuf for PoolBuffer {
-  fn read_ptr(&self) -> *const u8 {
-    self.as_slice().as_ptr()
-  }
-
-  fn bytes_init(&self) -> usize {
-    self.len
+impl compio::buf::IoBuf for PoolBuffer {
+  fn as_init(&self) -> &[u8] {
+    self.as_slice()
   }
 }
 
 #[cfg(test)]
 mod pool_tests {
   use super::*;
-  use monoio::buf::{IoBuf, IoBufMut};
 
-  #[monoio::test]
+  use compio::buf::{IoBuf, IoBufMut, SetLen};
+
+  #[compio::test]
   async fn test_buffer_pool() {
     let pool = Pool::new(5, 1024);
 
@@ -499,30 +493,25 @@ mod pool_tests {
     drop(buf2);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_io_buf_mut_conformance() {
     let pool = Pool::new(1, 1024);
     let mut buf = pool.acquire_buffer().await;
 
-    assert_eq!(buf.bytes_total(), 1024);
+    assert_eq!(buf.buf_capacity(), 1024);
 
-    // Clear the buffer
     buf.clear();
-    assert_eq!(buf.bytes_init(), 0);
+    assert_eq!(buf.as_init().len(), 0);
+    assert_eq!(buf.buf_capacity(), 1024);
 
-    // Test IoBufMut trait - bytes_total() should return full capacity
-    assert_eq!(buf.bytes_total(), 1024);
-
-    // Test set_init - set initialized length
     unsafe {
-      buf.set_init(10);
+      buf.set_len(10);
     }
-    assert_eq!(buf.bytes_init(), 10);
+    assert_eq!(buf.as_init().len(), 10);
 
-    // Test that we can write to the buffer through IoBufMut write_ptr
     unsafe {
-      let ptr = buf.write_ptr();
-      *ptr = 42;
+      let ptr = buf.as_uninit().as_mut_ptr();
+      (*ptr) = std::mem::MaybeUninit::new(42);
     }
 
     // Verify deref works - we should be able to use BytesMut methods
@@ -530,7 +519,7 @@ mod pool_tests {
     assert_eq!(buf.len(), 0);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_shared_buffer_conversion() {
     let pool = Pool::new(1, 1024);
     let mut buf = pool.acquire_buffer().await;
@@ -549,7 +538,7 @@ mod pool_tests {
     // Note: buf is moved by freeze(), so we can't access it here
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_multithreaded() {
     use std::sync::Arc;
     use std::thread;
@@ -776,7 +765,7 @@ mod bucketed_pool_tests {
     BucketedPool::new_with_memory_budget(1024, 8192, 0, 100, 2, 0.5);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_acquire_appropriate_bucket() {
     // Test that acquire() returns the right bucket size for different requests
     let pool = BucketedPool::new_with_memory_budget(100, 800, 100 * 1024, 100, 2, 0.5);
@@ -798,7 +787,7 @@ mod bucketed_pool_tests {
     assert_eq!(buf4.len(), 800);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_no_available_for_oversized_requests() {
     // Test that oversized requests return None
     let pool = BucketedPool::new_with_memory_budget(100, 400, 10 * 1024, 100, 2, 0.5);
@@ -812,7 +801,7 @@ mod bucketed_pool_tests {
     assert_eq!(pool.total_available_count(), initial_available);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_bucket_reuse() {
     // Test that buffers are properly returned to their buckets
     let pool = BucketedPool::new_with_memory_budget(100, 400, 10 * 1024, 100, 2, 0.5);
@@ -835,7 +824,7 @@ mod bucketed_pool_tests {
     assert_eq!(pool.total_in_use_count(), initial_in_use);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_multithreaded_bucketed_pool() {
     // Test concurrent access to the bucketed pool
     let pool = Arc::new(BucketedPool::new_with_memory_budget(1024, 4096, 200 * 1024, 100, 2, 0.5));
@@ -844,8 +833,7 @@ mod bucketed_pool_tests {
     for i in 0..10 {
       let pool_clone = pool.clone();
       let handle = thread::spawn(move || {
-        let mut rt = monoio::RuntimeBuilder::<monoio::FusionDriver>::new().enable_all().build().unwrap();
-        rt.block_on(async move {
+        crate::runtime_block_on(async move {
           // Each thread requests a different size (max 4000 to stay within 4096 limit)
           let size = 400 + i * 350;
           let mut buf = pool_clone.acquire_buffer(size).await.unwrap();
@@ -855,9 +843,6 @@ mod bucketed_pool_tests {
 
           // Verify we can read it back
           assert_eq!(buf.as_slice()[0], i as u8);
-
-          // Simulate some work
-          monoio::time::sleep(std::time::Duration::from_millis(10)).await;
         });
       });
       handles.push(handle);
@@ -871,7 +856,7 @@ mod bucketed_pool_tests {
     assert_eq!(pool.total_in_use_count(), 0);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_stats_tracking() {
     // Test that statistics are properly tracked across all buckets
     let pool = BucketedPool::new_with_memory_budget(100, 800, 10 * 1024, 100, 2, 0.5);
@@ -901,7 +886,7 @@ mod bucketed_pool_tests {
     assert_eq!(pool.total_available_count(), initial_available);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_edge_case_exact_size_match() {
     // Create pool with enough buffers for all requests
     let pool = BucketedPool::new_with_memory_budget(100, 400, 10 * 1024, 100, 2, 0.5);
@@ -917,7 +902,7 @@ mod bucketed_pool_tests {
     assert_eq!(buf3.len(), 400);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_large_growth_factor() {
     // Test with larger growth factor
     let pool = BucketedPool::new_with_memory_budget(100, 1600, 100 * 1024, 100, 4, 0.5);
@@ -933,7 +918,7 @@ mod bucketed_pool_tests {
     }
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_mixed_pool_and_none() {
     // Test mix of pool allocations and None for oversized
     let pool = BucketedPool::new_with_memory_budget(100, 200, 10 * 1024, 100, 2, 0.5);
@@ -973,7 +958,7 @@ mod bucketed_pool_tests {
     assert!(debug_str.contains("total_available"));
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_clone_behavior() {
     // Test that cloning works correctly
     let pool = BucketedPool::new_with_memory_budget(100, 400, 10 * 1024, 100, 2, 0.5);
@@ -996,7 +981,7 @@ mod bucketed_pool_tests {
     assert_eq!(cloned_pool.total_in_use_count(), 0);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_fallback_to_next_bucket() {
     // Test that when a bucket is exhausted, we fall back to the next larger bucket
     // Create pool with small memory budget to ensure limited buffers per bucket
@@ -1046,7 +1031,7 @@ mod bucketed_pool_tests {
     assert_eq!(buf3.len(), 100, "should get from 100-byte bucket again after release");
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn test_excessive_budget_all_buckets_capped() {
     // Test scenario where budget is so large that all buckets hit max_buffers cap
     // This verifies that excess budget is properly handled and doesn't cause issues

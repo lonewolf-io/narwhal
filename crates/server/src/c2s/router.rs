@@ -327,7 +327,7 @@ mod tests {
     }
   }
 
-  /// Creates a test router with a single shard actor on the current monoio runtime.
+  /// Creates a test router with a single shard actor on the current runtime.
   fn create_test_router() -> Router {
     let total_connections = Arc::new(AtomicUsize::new(0));
     let (tx, rx) = async_channel::bounded(64);
@@ -345,7 +345,7 @@ mod tests {
     }
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn register_and_has_connection() {
     let router = create_test_router();
     let username = StringAtom::from("alice");
@@ -356,7 +356,7 @@ mod tests {
     assert!(router.has_connection(&username).await);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn exclusive_registration_fails_when_exists() {
     let router = create_test_router();
     let username = StringAtom::from("bob");
@@ -368,7 +368,7 @@ mod tests {
     assert!(!router.register_connection(username.clone(), Arc::new(tx2), 2, true).await);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn exclusive_registration_succeeds_when_empty() {
     let router = create_test_router();
     let username = StringAtom::from("carol");
@@ -377,7 +377,7 @@ mod tests {
     assert!(router.register_connection(username.clone(), Arc::new(tx), 1, true).await);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn unregister_last_connection_returns_true() {
     let router = create_test_router();
     let username = StringAtom::from("dave");
@@ -389,7 +389,7 @@ mod tests {
     assert!(!router.has_connection(&username).await);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn unregister_non_last_connection_returns_false() {
     let router = create_test_router();
     let username = StringAtom::from("eve");
@@ -403,7 +403,7 @@ mod tests {
     assert!(router.has_connection(&username).await);
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn route_to_delivers_message() {
     let router = create_test_router();
     let username = StringAtom::from("frank");
@@ -422,7 +422,7 @@ mod tests {
     assert!(tx_ref.was_called());
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn route_to_excludes_handler() {
     let router = create_test_router();
     let username = StringAtom::from("grace");
@@ -445,7 +445,7 @@ mod tests {
     assert!(tx2_ref.was_called());
   }
 
-  #[monoio::test]
+  #[compio::test]
   async fn len_tracks_connections() {
     let router = create_test_router();
 

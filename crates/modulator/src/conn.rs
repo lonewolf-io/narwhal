@@ -33,7 +33,7 @@ use crate::modulator::{
   AuthRequest, AuthResult, ForwardBroadcastPayloadRequest, ForwardBroadcastPayloadResult, ForwardEventRequest,
   Operation, OutboundPrivatePayload, ReceivePrivatePayloadRequest, SendPrivatePayloadRequest, SendPrivatePayloadResult,
 };
-use narwhal_client::monoio::m2s::M2sClient;
+use narwhal_client::compio::m2s::M2sClient;
 
 use crate::{M2sServerConfig, Modulator, S2mServerConfig};
 

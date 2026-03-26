@@ -9,7 +9,7 @@ anyhow = "1.0.101"
 async-channel = "2.5.0"
 async-lock = "3.4.2"
 async-trait = "0.1.89"
-monoio = { version = "0.2.4", features = ["bytes"] }
+compio = { version = "0.18", features = ["runtime", "time", "net", "io"] }
 futures = "0.3.32"
 humantime-serde = "1.1.1"
 parking_lot = "0.12.5"
@@ -24,5 +24,4 @@ narwhal-util = { path = "../util" }
 prometheus-client = "0.24"
 
 [dev-dependencies]
-monoio = { version = "0.2.4", features = ["macros"] }
 narwhal-test-util = { path = "../test-util" }

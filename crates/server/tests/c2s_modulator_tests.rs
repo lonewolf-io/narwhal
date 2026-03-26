@@ -7,7 +7,7 @@ use std::time::Duration;
 use async_lock::Mutex;
 
 use narwhal_client::S2mConfig;
-use narwhal_client::monoio::s2m::S2mClient;
+use narwhal_client::compio::s2m::S2mClient;
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_modulator::create_s2m_listener;
 use narwhal_modulator::modulator::{AuthResult, ForwardBroadcastPayloadResult, SendPrivatePayloadResult};
@@ -33,7 +33,7 @@ const TEST_USER_3: &str = "test_user_3";
 
 const SHARED_SECRET: &str = "a_secret";
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_single_step_auth() -> anyhow::Result<()> {
   let modulator = TestModulator::new()
     .with_auth_handler(|_| async { Ok(AuthResult::Success { username: StringAtom::from("test_user") }) });
@@ -86,7 +86,7 @@ async fn test_c2s_modulator_single_step_auth() -> anyhow::Result<()> {
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_auth_failed() -> anyhow::Result<()> {
   let modulator = TestModulator::new().with_auth_handler(|_| async { Ok(AuthResult::Failure) });
 
@@ -138,7 +138,7 @@ async fn test_c2s_modulator_auth_failed() -> anyhow::Result<()> {
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_multi_step_auth() -> anyhow::Result<()> {
   let modulator = TestModulator::new().with_auth_handler(|token| async move {
     if token.as_ref() == "initial_token" {
@@ -212,7 +212,7 @@ async fn test_c2s_modulator_multi_step_auth() -> anyhow::Result<()> {
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_send_private_payload() -> anyhow::Result<()> {
   // Create a modulator that validates private payloads - only accepts messages that contain "valid"
   let modulator = TestModulator::new().with_send_private_payload_handler(|payload, _from| async move {
@@ -298,7 +298,7 @@ async fn test_c2s_modulator_send_private_payload() -> anyhow::Result<()> {
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_receive_private_payload() -> anyhow::Result<()> {
   const TEST_PRIVATE_PAYLOAD: &str = r#"{"type":"test","message":"Hello from modulator"}"#;
 
@@ -393,7 +393,7 @@ async fn test_c2s_modulator_receive_private_payload() -> anyhow::Result<()> {
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_broadcast_payload_validation() -> anyhow::Result<()> {
   // Create a modulator that validates payloads - only accepts payloads that contain "valid"
   let modulator =
@@ -483,7 +483,7 @@ async fn test_c2s_modulator_broadcast_payload_validation() -> anyhow::Result<()>
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_broadcast_payload_alteration() -> anyhow::Result<()> {
   // Create a modulator that reverses the payload text
   let modulator =
@@ -588,7 +588,7 @@ async fn test_c2s_modulator_broadcast_payload_alteration() -> anyhow::Result<()>
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_forward_event() -> anyhow::Result<()> {
   // Create a modulator that captures events
   let captured_events = Arc::new(Mutex::new(Vec::new()));
@@ -714,7 +714,7 @@ async fn test_c2s_modulator_forward_event() -> anyhow::Result<()> {
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_channel_survives_single_connection_drop() -> anyhow::Result<()> {
   // Create a modulator that authenticates all connections as the same user
   let modulator = TestModulator::new()
@@ -795,7 +795,7 @@ async fn test_c2s_modulator_channel_survives_single_connection_drop() -> anyhow:
   drop(conn1);
 
   // Wait for the server to process the connection drop
-  monoio::time::sleep(Duration::from_secs(1)).await;
+  compio::runtime::time::sleep(Duration::from_secs(1)).await;
 
   // Second connection should still be able to list channels
   // and see that the user is still a member of the channel
@@ -828,7 +828,7 @@ async fn test_c2s_modulator_channel_survives_single_connection_drop() -> anyhow:
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_channel_persist_not_allowed_for_identified_users() -> anyhow::Result<()> {
   let mut suite = C2sSuite::new(default_c2s_config()).await?;
   suite.setup().await?;
@@ -862,7 +862,7 @@ async fn test_c2s_channel_persist_not_allowed_for_identified_users() -> anyhow::
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_channel_persist_allowed_for_authenticated_users() -> anyhow::Result<()> {
   let modulator = TestModulator::new()
     .with_auth_handler(|_| async { Ok(AuthResult::Success { username: StringAtom::from("alice") }) });
@@ -922,7 +922,7 @@ async fn test_c2s_channel_persist_allowed_for_authenticated_users() -> anyhow::R
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_leave_transient_channels_on_disconnect() -> anyhow::Result<()> {
   let modulator = TestModulator::new().with_auth_handler(|token| async move {
     let username = token.to_string();
@@ -986,7 +986,7 @@ async fn test_c2s_modulator_leave_transient_channels_on_disconnect() -> anyhow::
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_modulator_keep_persistent_channels_on_disconnect() -> anyhow::Result<()> {
   let modulator = TestModulator::new().with_auth_handler(|token| async move {
     let username = token.to_string();
@@ -1092,7 +1092,7 @@ async fn seed_persistent_channel(store: &InMemoryChannelStore, channel: &str) ->
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_persisted_channels_restored_when_auth_enabled() -> anyhow::Result<()> {
   let store = InMemoryChannelStore::new();
   seed_persistent_channel(&store, "!persist@localhost").await?;
@@ -1152,7 +1152,7 @@ async fn test_c2s_persisted_channels_restored_when_auth_enabled() -> anyhow::Res
   Ok(())
 }
 
-#[monoio::test(enable_timer = true)]
+#[compio::test]
 async fn test_c2s_persisted_channels_not_restored_when_auth_disabled() -> anyhow::Result<()> {
   let store = InMemoryChannelStore::new();
   seed_persistent_channel(&store, "!persist@localhost").await?;

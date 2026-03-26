@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::anyhow;
 use async_channel::Sender;
-use monoio::net::TcpListener;
+use narwhal_common::runtime::TcpListener;
 
 use futures::{FutureExt, select};
 use tracing::{error, info, trace, warn};
@@ -461,13 +461,13 @@ fn create_plain_tcp_listener(addr: SocketAddr) -> anyhow::Result<std::net::TcpLi
   Ok(listener)
 }
 
-fn create_unix_listener(socket_path: &str) -> anyhow::Result<monoio::net::UnixListener> {
+fn create_unix_listener(socket_path: &str) -> anyhow::Result<narwhal_common::runtime::UnixListener> {
   let std_listener = std::os::unix::net::UnixListener::bind(socket_path)
     .map_err(|e| anyhow!("failed to bind to Unix socket {}: {}", socket_path, e))?;
   std_listener.set_nonblocking(true)?;
 
-  let listener =
-    monoio::net::UnixListener::from_std(std_listener).map_err(|e| anyhow!("failed to wrap Unix listener: {}", e))?;
+  let listener = narwhal_common::runtime::UnixListener::from_std(std_listener)
+    .map_err(|e| anyhow!("failed to wrap Unix listener: {}", e))?;
 
   Ok(listener)
 }

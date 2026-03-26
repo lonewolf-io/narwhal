@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-//! Authentication types shared across tokio and monoio clients.
+//! Authentication types shared across tokio and compio clients.
 
 use std::sync::Arc;
 

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-#[cfg(feature = "runtime-monoio")]
-mod monoio_io;
+mod compio_io;
 
 use core::fmt::Debug;
 use std::cell::{Cell, RefCell, UnsafeCell};
@@ -624,7 +623,7 @@ pub struct Conn<D: Dispatcher> {
   pong_notifier: Option<Sender<u32>>,
 
   /// Cancellation sender for the current scheduled task (ping or timeout).
-  /// Dropping this sender signals the spawned task to stop (monoio's
+  /// Dropping this sender signals the spawned task to stop (compio's
   /// JoinHandle drop does NOT cancel the task, so we use a channel).
   scheduled_task: Option<Sender<()>>,
 
@@ -837,7 +836,7 @@ impl<D: Dispatcher> Conn<D> {
     let (pong_tx, pong_rx) = bounded::<u32>(1);
     self.pong_notifier = Some(pong_tx);
 
-    // Create cancellation channel (monoio JoinHandle drop doesn't cancel)
+    // Create cancellation channel (compio JoinHandle drop doesn't cancel)
     let (cancel_tx, cancel_rx) = bounded::<()>(1);
 
     runtime::spawn_detached(async move {
