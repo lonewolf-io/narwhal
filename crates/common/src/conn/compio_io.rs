@@ -105,7 +105,10 @@ impl<W: AsyncWrite> ConnWriter for CompioConnWriter<W> {
       return Ok(());
     }
 
-    let bufs = std::mem::take(batch);
+    // Use drain(..).collect() instead of mem::take to preserve batch's capacity
+    // across the connection write loop, avoiding repeated reallocations.
+    #[allow(clippy::drain_collect)]
+    let bufs: Vec<PoolBuffer> = batch.drain(..).collect();
     let compio::buf::BufResult(result, _) = self.writer.write_vectored_all(bufs).await;
     result.map_err(|e| anyhow!(e))?;
 

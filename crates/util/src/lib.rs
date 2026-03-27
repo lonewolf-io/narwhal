@@ -10,7 +10,8 @@ pub mod string_atom;
 /// Creates a new runtime and blocks on the given future.
 ///
 /// Useful for tests that need a runtime on a spawned thread.
-pub fn runtime_block_on<F: std::future::Future>(future: F) -> F::Output {
+#[cfg(test)]
+pub(crate) fn runtime_block_on<F: std::future::Future>(future: F) -> F::Output {
   let rt = compio::runtime::Runtime::new().unwrap();
   rt.block_on(future)
 }

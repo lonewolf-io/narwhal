@@ -13,7 +13,7 @@
 //! - **[`compio`]** — completion-based (compio)
 //!
 //! Import the client types you need directly from the corresponding module,
-//! e.g. `narwhal_client::tokio::C2sClient` or `narwhal_client::compio::C2sClient`.
+//! e.g. `narwhal_client::tokio::c2s::C2sClient` or `narwhal_client::compio::c2s::C2sClient`.
 //!
 //! ## Client Types
 //!
@@ -24,7 +24,7 @@
 //! ## Example
 //!
 //! ```ignore
-//! use narwhal_client::tokio::{C2sClient, TlsDialer};
+//! use narwhal_client::tokio::c2s::C2sClient;
 //! use narwhal_client::{C2sConfig, AuthMethod};
 //!
 //! # async fn example() -> anyhow::Result<()> {
