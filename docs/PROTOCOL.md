@@ -879,7 +879,7 @@ Returns the configuration for a channel.
 
 **Example**:
 ```
-CHAN_CONFIG id=9 channel=!42@example.com max_clients=100 max_payload_size=1048576 max_persist_messages=50 persist=true message_flush_interval=5000
+CHAN_CONFIG id=9 channel=!42@example.com max_clients=100 max_payload_size=1048576 max_persist_messages=50 message_flush_interval=5000 persist=true
 ```
 
 ---
@@ -901,7 +901,7 @@ Sets the configuration for a channel. Only the channel owner can modify configur
 
 **Example**:
 ```
-SET_CHAN_CONFIG id=10 channel=!42@example.com max_clients=200 max_payload_size=2097152 persist=true message_flush_interval=5000
+SET_CHAN_CONFIG id=10 channel=!42@example.com max_clients=200 max_payload_size=2097152 message_flush_interval=5000 persist=true
 ```
 
 **Response**: [SET_CHAN_CONFIG_ACK](#set_chan_config_ack) or [ERROR](#error)
