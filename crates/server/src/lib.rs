@@ -99,6 +99,7 @@ async fn run_server(
     max_channels_per_client: c2s_config.limits.max_channels_per_client,
     max_payload_size: c2s_config.limits.max_payload_size,
     max_persist_messages: c2s_config.limits.max_persist_messages,
+    max_message_flush_interval: c2s_config.limits.max_message_flush_interval,
   };
 
   let local_domain = StringAtom::from(c2s_config.listener.domain.as_str());

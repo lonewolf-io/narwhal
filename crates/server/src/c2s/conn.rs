@@ -788,6 +788,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
         max_payload_size: params.max_payload_size,
         max_persist_messages: params.max_persist_messages,
         persist: params.persist,
+        message_flush_interval: params.message_flush_interval,
       };
     }
 

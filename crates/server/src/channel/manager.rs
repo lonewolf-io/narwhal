@@ -186,7 +186,8 @@ struct Channel<ML: MessageLog> {
   allowed_targets: Rc<[Nid]>,
   notifier: Notifier,
   seq: u64,
-  message_log: ML,
+  message_log: Rc<ML>,
+  flush_cancel_tx: Option<Sender<()>>,
 }
 
 // === impl Channel ===
@@ -202,7 +203,8 @@ impl<ML: MessageLog> Channel<ML> {
       allowed_targets: Rc::from([]),
       notifier,
       seq: 1,
-      message_log,
+      message_log: Rc::new(message_log),
+      flush_cancel_tx: None,
     }
   }
 
@@ -298,6 +300,39 @@ impl<ML: MessageLog> Channel<ML> {
     seq
   }
 
+  fn ensure_flush_task(&mut self, interval_ms: u32) {
+    if self.flush_cancel_tx.is_some() {
+      return;
+    }
+    let (cancel_tx, cancel_rx) = async_channel::bounded::<()>(1);
+    let message_log = self.message_log.clone();
+    let handler = self.handler.clone();
+    let interval = std::time::Duration::from_millis(interval_ms as u64);
+
+    narwhal_common::runtime::spawn_detached(async move {
+      use futures::FutureExt;
+
+      loop {
+        futures::select! {
+          _ = narwhal_common::runtime::sleep(interval).fuse() => {},
+          _ = cancel_rx.recv().fuse() => break,
+        }
+        if let Err(e) = message_log.flush().await {
+          warn!(channel = %handler, error = %e, "periodic message log flush failed");
+        }
+      }
+    });
+
+    self.flush_cancel_tx = Some(cancel_tx);
+  }
+
+  fn cancel_flush_task(&mut self) {
+    if let Some(tx) = self.flush_cancel_tx.take() {
+      // Best-effort send; if the receiver is already gone, that's fine.
+      let _ = tx.try_send(());
+    }
+  }
+
   fn to_persisted(&self) -> PersistedChannel {
     PersistedChannel {
       handler: self.handler.clone(),
@@ -332,6 +367,16 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     self.restore(handlers).await;
     while let Ok(cmd) = self.mailbox.recv().await {
       self.handle(cmd).await;
+    }
+
+    // Shutdown: cancel all flush tasks and perform final flush on each channel.
+    for (handler, channel) in self.channels.iter_mut() {
+      channel.cancel_flush_task();
+      if channel.config.persist == Some(true)
+        && let Err(e) = channel.message_log.flush().await
+      {
+        warn!(channel = %handler, error = %e, "final flush on shutdown failed");
+      }
     }
   }
 
@@ -454,6 +499,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         max_payload_size: Some(self.limits.max_payload_size),
         max_persist_messages: Some(0),
         persist: Some(false),
+        message_flush_interval: Some(0),
       };
       let message_log = self.message_log_factory.create(&handler);
       self.channels.insert(handler.clone(), Channel::new(handler.clone(), config, self.notifier.clone(), message_log));
@@ -691,8 +737,16 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       self.membership.release_slot(username, &channel_id.handler).await;
     }
 
-    // Clean up persistent storage. Best effort, must not block channel removal or leak slots.
+    // Cancel flush task and perform final flush before cleanup.
     let is_persistent = self.channels.get(&channel_id.handler).is_some_and(|c| c.config.persist == Some(true));
+    if let Some(channel) = self.channels.get_mut(&channel_id.handler) {
+      channel.cancel_flush_task();
+      if is_persistent && let Err(e) = channel.message_log.flush().await {
+        warn!(channel = %channel_id.handler, error = %e, "final flush on delete failed");
+      }
+    }
+
+    // Clean up persistent storage. Best effort, must not block channel removal or leak slots.
     if is_persistent {
       self.delete_persistent_storage(&channel_id.handler).await;
     }
@@ -765,6 +819,13 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
 
     if is_persistent {
       channel.message_log.append(&msg, &payload, max_persist_messages).await?;
+
+      let flush_interval = channel.config.message_flush_interval.unwrap_or(0);
+      if flush_interval == 0 {
+        channel.message_log.flush().await?;
+      } else {
+        channel.ensure_flush_task(flush_interval);
+      }
     }
 
     self.router.route_to_many(msg, Some(payload), allowed_targets.iter(), Some(transmitter.resource())).await?;
@@ -911,6 +972,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       max_payload_size: config.max_payload_size.unwrap_or(0),
       max_persist_messages: config.max_persist_messages.unwrap_or(0),
       persist: config.persist.unwrap_or(false),
+      message_flush_interval: config.message_flush_interval.unwrap_or(0),
     }));
 
     Ok(())
@@ -960,6 +1022,17 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
           .into(),
       );
     }
+
+    if let Some(v) = config.message_flush_interval
+      && v > self.limits.max_message_flush_interval
+    {
+      return Err(
+        narwhal_protocol::Error::new(BadRequest)
+          .with_id(correlation_id)
+          .with_detail("message_flush_interval exceeds server established limit")
+          .into(),
+      );
+    }
     let Some(channel) = self.channels.get_mut(&channel_id.handler) else {
       return Err(narwhal_protocol::Error::new(ChannelNotFound).with_id(correlation_id).into());
     };
@@ -969,6 +1042,8 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     }
 
     let was_persistent = channel.config.persist == Some(true);
+    let flush_interval_changed =
+      config.message_flush_interval.is_some() && config.message_flush_interval != channel.config.message_flush_interval;
     let new_config = channel.config.merge(&config);
     let is_persistent = new_config.persist == Some(true);
 
@@ -979,6 +1054,25 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     }
 
     channel.config = new_config;
+
+    // Cancel the flush task if persist was toggled off or flush interval changed.
+    if (!is_persistent && was_persistent) || flush_interval_changed {
+      channel.cancel_flush_task();
+
+      // When the flush interval changed but persistence is still enabled, flush any buffered
+      // messages and restart the periodic task immediately so they are not left pending
+      // indefinitely waiting for the next broadcast.
+      if flush_interval_changed && is_persistent {
+        if let Err(e) = channel.message_log.flush().await {
+          warn!(channel = %channel_id.handler, error = %e, "flush on interval change failed");
+        }
+        if let Some(interval) = channel.config.message_flush_interval
+          && interval > 0
+        {
+          channel.ensure_flush_task(interval);
+        }
+      }
+    }
 
     if !is_persistent && was_persistent {
       self.delete_persistent_storage(&channel_id.handler).await;
@@ -1132,7 +1226,11 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
 
     if channel.is_empty() {
       let is_persistent = channel.config.persist == Some(true);
+      channel.cancel_flush_task();
       if is_persistent {
+        if let Err(e) = channel.message_log.flush().await {
+          warn!(channel = %handler, error = %e, "final flush on empty channel failed");
+        }
         self.delete_persistent_storage(handler).await;
       }
       self.channels.remove(handler);
@@ -1161,6 +1259,7 @@ pub struct ChannelManagerLimits {
   pub max_channels_per_client: u32,
   pub max_payload_size: u32,
   pub max_persist_messages: u32,
+  pub max_message_flush_interval: u32,
 }
 
 /// The channel manager.
@@ -1733,6 +1832,7 @@ pub struct ChannelConfig {
   pub max_payload_size: Option<u32>,
   pub max_persist_messages: Option<u32>,
   pub persist: Option<bool>,
+  pub message_flush_interval: Option<u32>,
 }
 
 // === impl ChannelConfig ===
@@ -1751,6 +1851,9 @@ impl ChannelConfig {
     }
     if let Some(v) = other.persist {
       config.persist = Some(v);
+    }
+    if let Some(v) = other.message_flush_interval {
+      config.message_flush_interval = Some(v);
     }
     config
   }

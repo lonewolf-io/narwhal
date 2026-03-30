@@ -111,6 +111,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
       max_channels_per_client: arc_config.limits.max_channels_per_client,
       max_payload_size: arc_config.limits.max_payload_size,
       max_persist_messages: arc_config.limits.max_persist_messages,
+      max_message_flush_interval: arc_config.limits.max_message_flush_interval,
     };
 
     let mut registry = Registry::default();
@@ -319,6 +320,22 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
     persist: Option<bool>,
   ) -> anyhow::Result<()> {
     self
+      .configure_channel_full(username, channel, max_clients, max_payload_size, max_persist_messages, persist, None)
+      .await
+  }
+
+  #[allow(clippy::too_many_arguments)]
+  pub async fn configure_channel_full(
+    &mut self,
+    username: &str,
+    channel: &str,
+    max_clients: Option<u32>,
+    max_payload_size: Option<u32>,
+    max_persist_messages: Option<u32>,
+    persist: Option<bool>,
+    message_flush_interval: Option<u32>,
+  ) -> anyhow::Result<()> {
+    self
       .write_message(
         username,
         Message::SetChannelConfiguration(SetChannelConfigurationParameters {
@@ -328,6 +345,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
           max_payload_size,
           persist,
           max_persist_messages,
+          message_flush_interval,
         }),
       )
       .await?;

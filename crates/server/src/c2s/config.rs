@@ -174,6 +174,11 @@ pub struct Limits {
   /// The maximum number of persisted messages per channel.
   #[serde(default = "default_max_persist_messages")]
   pub max_persist_messages: u32,
+
+  /// The maximum message flush interval in milliseconds that a client can set.
+  /// A channel value of 0 (the default) means flush immediately after every append.
+  #[serde(default = "default_max_message_flush_interval")]
+  pub max_message_flush_interval: u32,
 }
 
 fn default_max_connections() -> u32 {
@@ -220,6 +225,10 @@ fn default_max_persist_messages() -> u32 {
   100
 }
 
+fn default_max_message_flush_interval() -> u32 {
+  60_000 // 60 seconds
+}
+
 impl Default for Limits {
   fn default() -> Self {
     Self {
@@ -234,6 +243,7 @@ impl Default for Limits {
       rate_limit: default_rate_limit(),
       payload_pool_memory_budget: default_payload_pool_memory_budget(),
       max_persist_messages: default_max_persist_messages(),
+      max_message_flush_interval: default_max_message_flush_interval(),
     }
   }
 }

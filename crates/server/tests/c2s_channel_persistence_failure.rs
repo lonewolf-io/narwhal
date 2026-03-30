@@ -300,6 +300,7 @@ async fn test_c2s_set_config_fails_when_store_save_fails() -> anyhow::Result<()>
         max_payload_size: Some(4096),
         persist: None,
         max_persist_messages: None,
+        message_flush_interval: None,
       }),
     )
     .await?;
@@ -334,6 +335,7 @@ async fn test_c2s_set_config_fails_when_store_save_fails() -> anyhow::Result<()>
       max_payload_size: 1024,
       max_persist_messages: 0,
       persist: true,
+      message_flush_interval: 0,
     }
   );
 

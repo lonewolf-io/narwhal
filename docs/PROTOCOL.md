@@ -875,10 +875,11 @@ Returns the configuration for a channel.
 - `max_payload_size` (u32, required): Maximum payload size in bytes
 - `max_persist_messages` (u32, required): Maximum number of messages to persist for this channel (0 = no limit configured)
 - `persist` (bool, required): Whether message persistence is enabled for this channel
+- `message_flush_interval` (u32, required): Interval in milliseconds between periodic message log flushes (0 = flush immediately after each append)
 
 **Example**:
 ```
-CHAN_CONFIG id=9 channel=!42@example.com max_clients=100 max_payload_size=1048576 max_persist_messages=50 persist=true
+CHAN_CONFIG id=9 channel=!42@example.com max_clients=100 max_payload_size=1048576 max_persist_messages=50 message_flush_interval=5000 persist=true
 ```
 
 ---
@@ -896,10 +897,11 @@ Sets the configuration for a channel. Only the channel owner can modify configur
 - `max_payload_size` (u32, optional): Maximum payload size in bytes
 - `max_persist_messages` (u32, optional): Maximum number of messages to persist for this channel
 - `persist` (bool, optional): Whether message persistence is enabled for this channel
+- `message_flush_interval` (u32, optional): Interval in milliseconds between periodic message log flushes (0 = flush immediately after each append)
 
 **Example**:
 ```
-SET_CHAN_CONFIG id=10 channel=!42@example.com max_clients=200 max_payload_size=2097152 persist=true
+SET_CHAN_CONFIG id=10 channel=!42@example.com max_clients=200 max_payload_size=2097152 message_flush_interval=5000 persist=true
 ```
 
 **Response**: [SET_CHAN_CONFIG_ACK](#set_chan_config_ack) or [ERROR](#error)
