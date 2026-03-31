@@ -22,7 +22,9 @@ use narwhal_protocol::{
 };
 use narwhal_server::c2s;
 use narwhal_server::channel::store::{ChannelStore, MessageLogFactory};
-use narwhal_server::channel::{ChannelManager, ChannelManagerLimits, NoopChannelStore, NoopMessageLogFactory};
+use narwhal_server::channel::{ChannelManager, ChannelManagerLimits, NoopMessageLogFactory};
+
+use crate::InMemoryChannelStore;
 use narwhal_server::notifier::Notifier;
 use narwhal_server::router::GlobalRouter;
 use narwhal_util::string_atom::StringAtom;
@@ -33,7 +35,7 @@ use crate::TestConn;
 type TlsStream = ClientTlsStream<TcpStream>;
 
 /// A test suite for the c2s server.
-pub struct C2sSuite<CS: ChannelStore = NoopChannelStore, MLF: MessageLogFactory = NoopMessageLogFactory> {
+pub struct C2sSuite<CS: ChannelStore = InMemoryChannelStore, MLF: MessageLogFactory = NoopMessageLogFactory> {
   /// The server configuration.
   config: Arc<c2s::Config>,
 
@@ -75,7 +77,14 @@ impl C2sSuite {
     s2m_client: Option<S2mClient>,
     m2s_payload_rx: Option<async_broadcast::Receiver<OutboundPrivatePayload>>,
   ) -> anyhow::Result<Self> {
-    Self::with_modulator_and_stores(config, s2m_client, m2s_payload_rx, NoopChannelStore, NoopMessageLogFactory).await
+    Self::with_modulator_and_stores(
+      config,
+      s2m_client,
+      m2s_payload_rx,
+      InMemoryChannelStore::new(),
+      NoopMessageLogFactory,
+    )
+    .await
   }
 }
 

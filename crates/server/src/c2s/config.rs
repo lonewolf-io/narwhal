@@ -46,6 +46,10 @@ pub struct Config {
   #[serde(default)]
   pub listener: ListenerConfig,
 
+  /// The storage configuration.
+  #[serde(default)]
+  pub storage: StorageConfig,
+
   /// The timeout for the connection.
   #[serde(default = "default_connect_timeout", with = "humantime_serde")]
   pub connect_timeout: Duration,
@@ -75,9 +79,28 @@ pub struct Config {
   pub limits: Limits,
 }
 
+/// Configuration for the storage system.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StorageConfig {
+  /// The directory where persistent data is stored.
+  #[serde(default = "default_data_dir")]
+  pub data_dir: String,
+}
+
+impl Default for StorageConfig {
+  fn default() -> Self {
+    Self { data_dir: default_data_dir() }
+  }
+}
+
+fn default_data_dir() -> String {
+  "./data".to_string()
+}
+
 impl Default for Config {
   fn default() -> Self {
     Config {
+      storage: StorageConfig::default(),
       listener: ListenerConfig::default(),
       connect_timeout: default_connect_timeout(),
       authenticate_timeout: default_authenticate_timeout(),

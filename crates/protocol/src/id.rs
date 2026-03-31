@@ -298,6 +298,21 @@ impl Display for Nid {
   }
 }
 
+#[cfg(feature = "serde")]
+impl serde::Serialize for Nid {
+  fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(self.full.as_ref())
+  }
+}
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for Nid {
+  fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+    let s: &str = serde::Deserialize::deserialize(deserializer)?;
+    Nid::from_str(s).map_err(serde::de::Error::custom)
+  }
+}
+
 #[cfg(test)]
 mod tests {
   use super::*;

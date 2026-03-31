@@ -12,12 +12,29 @@ use narwhal_util::string_atom::StringAtom;
 use super::manager::{ChannelAcl, ChannelConfig};
 
 /// Persisted channel metadata, restored on server startup.
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct PersistedChannel {
   pub handler: StringAtom,
   pub owner: Option<Nid>,
   pub config: ChannelConfig,
   pub acl: ChannelAcl,
+  #[serde(with = "rc_slice_serde")]
   pub members: Rc<[Nid]>,
+}
+
+mod rc_slice_serde {
+  use std::rc::Rc;
+
+  use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+  pub fn serialize<T: Serialize, S: Serializer>(data: &Rc<[T]>, serializer: S) -> Result<S::Ok, S::Error> {
+    data.as_ref().serialize(serializer)
+  }
+
+  pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(deserializer: D) -> Result<Rc<[T]>, D::Error> {
+    let v: Vec<T> = Vec::deserialize(deserializer)?;
+    Ok(Rc::from(v))
+  }
 }
 
 /// Storage backend for persisting channel metadata.
@@ -25,17 +42,18 @@ pub struct PersistedChannel {
 pub trait ChannelStore: Clone + Send + Sync + 'static {
   /// Persists channel metadata.
   /// Called on channel creation (when persist=true) and on any metadata update.
-  async fn save_channel(&self, channel: &PersistedChannel) -> anyhow::Result<()>;
+  /// Returns the storage hash that identifies this channel on disk.
+  async fn save_channel(&self, channel: &PersistedChannel) -> anyhow::Result<StringAtom>;
 
-  /// Removes all persisted metadata for the given channel handler.
+  /// Removes all persisted metadata for the given channel storage hash.
   /// Called when persist is toggled to false or the channel is deleted.
-  async fn delete_channel(&self, handler: &StringAtom) -> anyhow::Result<()>;
+  async fn delete_channel(&self, hash: &StringAtom) -> anyhow::Result<()>;
 
-  /// Returns all persisted channel handler IDs.
-  async fn load_channel_handlers(&self) -> anyhow::Result<Arc<[StringAtom]>>;
+  /// Returns the storage hashes of all persisted channels.
+  async fn load_channel_hashes(&self) -> anyhow::Result<Arc<[StringAtom]>>;
 
-  /// Loads persisted channel metadata.
-  async fn load_channel(&self, handler: &StringAtom) -> anyhow::Result<PersistedChannel>;
+  /// Loads persisted channel metadata by its storage hash.
+  async fn load_channel(&self, hash: &StringAtom) -> anyhow::Result<PersistedChannel>;
 }
 
 /// Factory for creating per-channel message logs.
@@ -71,31 +89,6 @@ pub trait MessageLog: 'static {
   async fn write_history<W: AsyncWrite>(&self, from_seq: u64, limit: u32, writer: &mut W) -> anyhow::Result<u32>
   where
     Self: Sized;
-}
-
-/// A no-op channel store that discards all writes and returns empty results.
-#[derive(Clone)]
-pub struct NoopChannelStore;
-
-// === impl NoopChannelStore ===
-
-#[async_trait(?Send)]
-impl ChannelStore for NoopChannelStore {
-  async fn save_channel(&self, _channel: &PersistedChannel) -> anyhow::Result<()> {
-    Ok(())
-  }
-
-  async fn delete_channel(&self, _handler: &StringAtom) -> anyhow::Result<()> {
-    Ok(())
-  }
-
-  async fn load_channel_handlers(&self) -> anyhow::Result<Arc<[StringAtom]>> {
-    Ok(Arc::from([]))
-  }
-
-  async fn load_channel(&self, _handler: &StringAtom) -> anyhow::Result<PersistedChannel> {
-    unimplemented!()
-  }
 }
 
 /// A no-op message log that discards all writes and returns empty results.

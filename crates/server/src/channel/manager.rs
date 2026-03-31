@@ -37,6 +37,7 @@ use crate::notifier::Notifier;
 use crate::router::GlobalRouter;
 use crate::transmitter::{Resource, Transmitter};
 
+use super::file_store::channel_hash;
 use super::membership::Membership;
 use super::store::{ChannelStore, MessageLog, MessageLogFactory, PersistedChannel};
 
@@ -188,6 +189,8 @@ struct Channel<ML: MessageLog> {
   seq: u64,
   message_log: Rc<ML>,
   flush_cancel_tx: Option<Sender<()>>,
+  /// The storage hash for this channel. `Some` for persistent channels, `None` for transient.
+  store_hash: Option<StringAtom>,
 }
 
 // === impl Channel ===
@@ -205,6 +208,7 @@ impl<ML: MessageLog> Channel<ML> {
       seq: 1,
       message_log: Rc::new(message_log),
       flush_cancel_tx: None,
+      store_hash: None,
     }
   }
 
@@ -363,8 +367,8 @@ struct ChannelShard<CS: ChannelStore, MLF: MessageLogFactory> {
 // === impl ChannelShard ===
 
 impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
-  async fn restore_and_run(mut self, handlers: Vec<StringAtom>) {
-    self.restore(handlers).await;
+  async fn restore_and_run(mut self, hashes: Vec<StringAtom>) {
+    self.restore(hashes).await;
     while let Ok(cmd) = self.mailbox.recv().await {
       self.handle(cmd).await;
     }
@@ -380,22 +384,24 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     }
   }
 
-  async fn restore(&mut self, handlers: Vec<StringAtom>) {
-    for handler in &handlers {
-      let persisted = match self.store.load_channel(handler).await {
+  async fn restore(&mut self, hashes: Vec<StringAtom>) {
+    for hash in &hashes {
+      let persisted = match self.store.load_channel(hash).await {
         Ok(p) => p,
         Err(e) => {
-          warn!(channel = %handler, error = %e, "skipping channel restore: failed to load persisted channel");
+          warn!(hash = %hash, error = %e, "skipping channel restore: failed to load persisted channel");
           continue;
         },
       };
 
-      let message_log = self.message_log_factory.create(handler);
+      let handler = persisted.handler.clone();
+      let message_log = self.message_log_factory.create(&handler);
 
       let mut channel = Channel::new(handler.clone(), persisted.config, self.notifier.clone(), message_log);
       channel.owner = persisted.owner;
       channel.acl = persisted.acl;
       channel.members = persisted.members;
+      channel.store_hash = Some(hash.clone());
       channel.seq = match channel.message_log.last_seq().await {
         Ok(seq) => seq + 1,
         Err(e) => {
@@ -408,10 +414,10 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       // Use u32::MAX to bypass the per-client limit: persisted membership is authoritative
       // and limit changes should not retroactively evict members from their channels.
       for member in channel.members.iter() {
-        self.membership.reserve_slot(&member.username, handler, u32::MAX).await;
+        self.membership.reserve_slot(&member.username, &handler, u32::MAX).await;
       }
 
-      self.channels.insert(handler.clone(), channel);
+      self.channels.insert(handler, channel);
       self.total_channels.fetch_add(1, Ordering::SeqCst);
       self.metrics.channels_active.inc();
     }
@@ -1050,7 +1056,10 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     if is_persistent {
       let mut projected = channel.to_persisted();
       projected.config = new_config.clone();
-      self.store.save_channel(&projected).await?;
+      let hash = self.store.save_channel(&projected).await?;
+      if channel.store_hash.is_none() {
+        channel.store_hash = Some(hash);
+      }
     }
 
     channel.config = new_config;
@@ -1076,6 +1085,8 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
 
     if !is_persistent && was_persistent {
       self.delete_persistent_storage(&channel_id.handler).await;
+      let channel = self.channels.get_mut(&channel_id.handler).unwrap();
+      channel.store_hash = None;
     }
 
     transmitter
@@ -1157,7 +1168,8 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     {
       warn!(channel = %handler, error = %e, "failed to delete persisted message log");
     }
-    if let Err(e) = self.store.delete_channel(handler).await {
+    let hash = self.channels.get(handler).and_then(|c| c.store_hash.clone()).unwrap_or_else(|| channel_hash(handler));
+    if let Err(e) = self.store.delete_channel(&hash).await {
       warn!(channel = %handler, error = %e, "failed to delete persisted channel");
     }
   }
@@ -1338,17 +1350,26 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
     let mut mailboxes = Vec::with_capacity(shard_count);
     let local_domain = self.router.c2s_router().local_domain();
 
-    // Load persisted channel handlers and group by shard (only when restoring).
-    let handlers: Arc<[StringAtom]> =
-      if restore_channels { self.store.load_channel_handlers().await? } else { Arc::from([]) };
+    // Load persisted channel hashes and determine shard assignment.
+    // Each hash's channel is loaded to extract the handler for shard routing,
+    // then the shard re-loads the full metadata on its own thread during restore.
+    let channel_hashes: Arc<[StringAtom]> =
+      if restore_channels { self.store.load_channel_hashes().await? } else { Arc::from([]) };
 
-    let mut shard_handlers: Vec<Vec<StringAtom>> = vec![Vec::new(); shard_count];
-    for handler in handlers.iter() {
-      let shard_id = shard_for(handler, shard_count);
-      shard_handlers[shard_id].push(handler.clone());
+    let mut shard_hashes: Vec<Vec<StringAtom>> = vec![Vec::new(); shard_count];
+    for hash in channel_hashes.iter() {
+      match self.store.load_channel(hash).await {
+        Ok(persisted) => {
+          let shard_id = shard_for(&persisted.handler, shard_count);
+          shard_hashes[shard_id].push(hash.clone());
+        },
+        Err(e) => {
+          warn!(hash = %hash, error = %e, "skipping channel restore: failed to load persisted channel");
+        },
+      }
     }
 
-    for (shard_id, handlers_for_shard) in shard_handlers.into_iter().enumerate() {
+    for (shard_id, hashes_for_shard) in shard_hashes.into_iter().enumerate() {
       let (tx, rx) = async_channel::bounded(self.mailbox_capacity);
       mailboxes.push(tx);
 
@@ -1378,7 +1399,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
             metrics,
             auth_enabled: restore_channels,
           };
-          shard.restore_and_run(handlers_for_shard).await;
+          shard.restore_and_run(hashes_for_shard).await;
         })
         .await?;
     }
@@ -1718,7 +1739,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
 }
 
 /// Per-domain ACLs.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 struct Acl {
   allow_lists: HashMap<StringAtom, HashSet<StringAtom>>,
 }
@@ -1794,7 +1815,7 @@ impl Acl {
 }
 
 /// The channel ACL.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ChannelAcl {
   join_acl: Acl,
   publish_acl: Acl,
@@ -1826,7 +1847,7 @@ impl ChannelAcl {
 }
 
 /// The channel configuration.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ChannelConfig {
   pub max_clients: Option<u32>,
   pub max_payload_size: Option<u32>,

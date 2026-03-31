@@ -32,22 +32,22 @@ impl FailingChannelStore {
 
 #[async_trait(?Send)]
 impl ChannelStore for FailingChannelStore {
-  async fn save_channel(&self, _channel: &PersistedChannel) -> anyhow::Result<()> {
+  async fn save_channel(&self, channel: &PersistedChannel) -> anyhow::Result<StringAtom> {
     if self.should_fail.load(Ordering::SeqCst) {
       return Err(anyhow::anyhow!("injected store failure"));
     }
+    Ok(channel.handler.clone())
+  }
+
+  async fn delete_channel(&self, _hash: &StringAtom) -> anyhow::Result<()> {
     Ok(())
   }
 
-  async fn delete_channel(&self, _handler: &StringAtom) -> anyhow::Result<()> {
-    Ok(())
-  }
-
-  async fn load_channel_handlers(&self) -> anyhow::Result<Arc<[StringAtom]>> {
+  async fn load_channel_hashes(&self) -> anyhow::Result<Arc<[StringAtom]>> {
     Ok(Arc::from([]))
   }
 
-  async fn load_channel(&self, _handler: &StringAtom) -> anyhow::Result<PersistedChannel> {
+  async fn load_channel(&self, _hash: &StringAtom) -> anyhow::Result<PersistedChannel> {
     unimplemented!()
   }
 }
@@ -134,31 +134,32 @@ impl InMemoryChannelStore {
 
 #[async_trait(?Send)]
 impl ChannelStore for InMemoryChannelStore {
-  async fn save_channel(&self, channel: &PersistedChannel) -> anyhow::Result<()> {
+  async fn save_channel(&self, channel: &PersistedChannel) -> anyhow::Result<StringAtom> {
+    let handler = channel.handler.clone();
     let stored = StoredChannel {
-      handler: channel.handler.clone(),
+      handler: handler.clone(),
       owner: channel.owner.clone(),
       config: channel.config.clone(),
       acl: channel.acl.clone(),
       members: channel.members.iter().cloned().collect(),
     };
-    self.channels.lock().await.insert(channel.handler.clone(), stored);
+    self.channels.lock().await.insert(handler.clone(), stored);
+    Ok(handler)
+  }
+
+  async fn delete_channel(&self, hash: &StringAtom) -> anyhow::Result<()> {
+    self.channels.lock().await.remove(hash);
     Ok(())
   }
 
-  async fn delete_channel(&self, handler: &StringAtom) -> anyhow::Result<()> {
-    self.channels.lock().await.remove(handler);
-    Ok(())
-  }
-
-  async fn load_channel_handlers(&self) -> anyhow::Result<Arc<[StringAtom]>> {
+  async fn load_channel_hashes(&self) -> anyhow::Result<Arc<[StringAtom]>> {
     let guard = self.channels.lock().await;
     Ok(guard.keys().cloned().collect::<Vec<_>>().into())
   }
 
-  async fn load_channel(&self, handler: &StringAtom) -> anyhow::Result<PersistedChannel> {
+  async fn load_channel(&self, hash: &StringAtom) -> anyhow::Result<PersistedChannel> {
     let guard = self.channels.lock().await;
-    let stored = guard.get(handler).ok_or_else(|| anyhow::anyhow!("channel not found: {}", handler))?;
+    let stored = guard.get(hash).ok_or_else(|| anyhow::anyhow!("channel not found: {}", hash))?;
     Ok(PersistedChannel {
       handler: stored.handler.clone(),
       owner: stored.owner.clone(),

@@ -16,7 +16,7 @@ async-lock = "3"
 narwhal-client = { path = "../client" }
 narwhal-common = { path = "../common" }
 narwhal-modulator = { path = "../modulator" }
-narwhal-protocol = { path = "../protocol" }
+narwhal-protocol = { path = "../protocol", features = ["serde"] }
 prometheus-client = "0.24"
 narwhal-server = { path = "../server" }
 narwhal-util = { path = "../util" }

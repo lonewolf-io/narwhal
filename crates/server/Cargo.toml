@@ -12,9 +12,11 @@ path = "bin/main.rs"
 [dependencies]
 anyhow = "1.0.101"
 async-channel = "2.5.0"
+bincode = { version = "2", features = ["serde"] }
+sha2 = "0.10"
 async-lock = "3.4.2"
 async-trait = "0.1.89"
-compio = { version = "0.18", features = ["runtime", "time", "net", "io", "macros"] }
+compio = { version = "0.18", features = ["runtime", "time", "net", "io", "macros", "fs"] }
 compio-tls = { version = "0.9", features = ["rustls"] }
 core_affinity = "0.8.3"
 clap = { version = "4.5.59", features = ["derive"] }
@@ -33,12 +35,13 @@ socket2 = "0.6.2"
 libc = "0.2.182"
 narwhal-common = { path = "../common" }
 narwhal-modulator = { path = "../modulator" }
-narwhal-protocol = { path = "../protocol" }
+narwhal-protocol = { path = "../protocol", features = ["serde"] }
 narwhal-util = { path = "../util" }
 prometheus-client = "0.24"
 rlimit = "0.11.0"
 
 [dev-dependencies]
 pki-types = { package = "rustls-pki-types", version = "1" }
+tempfile = "3"
 narwhal-client = { path = "../client" }
 narwhal-test-util = { path = "../test-util" }
