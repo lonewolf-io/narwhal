@@ -82,20 +82,24 @@ impl ChannelStore for FileChannelStore {
 
   async fn delete_channel(&self, hash: &StringAtom) -> anyhow::Result<()> {
     let dir = self.channel_dir(hash.as_ref());
-    if !dir.exists() {
-      return Ok(());
-    }
-
-    // Remove metadata files, then the directory.
+    // Remove metadata files, then the directory. Treat NotFound as success.
     let metadata_path = dir.join(METADATA_FILE);
-    if metadata_path.exists() {
-      compio::fs::remove_file(&metadata_path).await?;
+    if let Err(e) = compio::fs::remove_file(&metadata_path).await {
+      if e.kind() != std::io::ErrorKind::NotFound {
+        return Err(e.into());
+      }
     }
     let tmp_path = dir.join(METADATA_TMP_FILE);
-    if tmp_path.exists() {
-      compio::fs::remove_file(&tmp_path).await?;
+    if let Err(e) = compio::fs::remove_file(&tmp_path).await {
+      if e.kind() != std::io::ErrorKind::NotFound {
+        return Err(e.into());
+      }
     }
-    compio::fs::remove_dir(&dir).await?;
+    if let Err(e) = compio::fs::remove_dir(&dir).await {
+      if e.kind() != std::io::ErrorKind::NotFound {
+        return Err(e.into());
+      }
+    }
 
     Ok(())
   }

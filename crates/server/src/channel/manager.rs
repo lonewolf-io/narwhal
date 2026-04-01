@@ -1057,9 +1057,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       let mut projected = channel.to_persisted();
       projected.config = new_config.clone();
       let hash = self.store.save_channel(&projected).await?;
-      if channel.store_hash.is_none() {
-        channel.store_hash = Some(hash);
-      }
+      channel.store_hash = Some(hash);
     }
 
     channel.config = new_config;
