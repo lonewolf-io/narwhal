@@ -84,21 +84,21 @@ impl ChannelStore for FileChannelStore {
     let dir = self.channel_dir(hash.as_ref());
     // Remove metadata files, then the directory. Treat NotFound as success.
     let metadata_path = dir.join(METADATA_FILE);
-    if let Err(e) = compio::fs::remove_file(&metadata_path).await {
-      if e.kind() != std::io::ErrorKind::NotFound {
-        return Err(e.into());
-      }
+    if let Err(e) = compio::fs::remove_file(&metadata_path).await
+      && e.kind() != std::io::ErrorKind::NotFound
+    {
+      return Err(e.into());
     }
     let tmp_path = dir.join(METADATA_TMP_FILE);
-    if let Err(e) = compio::fs::remove_file(&tmp_path).await {
-      if e.kind() != std::io::ErrorKind::NotFound {
-        return Err(e.into());
-      }
+    if let Err(e) = compio::fs::remove_file(&tmp_path).await
+      && e.kind() != std::io::ErrorKind::NotFound
+    {
+      return Err(e.into());
     }
-    if let Err(e) = compio::fs::remove_dir(&dir).await {
-      if e.kind() != std::io::ErrorKind::NotFound {
-        return Err(e.into());
-      }
+    if let Err(e) = compio::fs::remove_dir(&dir).await
+      && e.kind() != std::io::ErrorKind::NotFound
+    {
+      return Err(e.into());
     }
 
     Ok(())
