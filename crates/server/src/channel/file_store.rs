@@ -15,7 +15,7 @@ const METADATA_TMP_FILE: &str = "metadata.bin.tmp";
 const MAX_METADATA_SIZE: usize = 64 * 1024 * 1024; // 64 MiB
 
 /// Computes the SHA-256 hex-encoded hash of a channel handler, used as the directory name.
-pub(crate) fn channel_hash(handler: &StringAtom) -> StringAtom {
+fn channel_hash(handler: &StringAtom) -> StringAtom {
   let digest = Sha256::digest(handler.as_ref().as_bytes());
   let hex = digest.iter().map(|b| format!("{b:02x}")).collect::<String>();
   StringAtom::from(hex)

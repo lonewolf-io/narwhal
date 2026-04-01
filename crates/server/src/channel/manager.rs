@@ -37,7 +37,6 @@ use crate::notifier::Notifier;
 use crate::router::GlobalRouter;
 use crate::transmitter::{Resource, Transmitter};
 
-use super::file_store::channel_hash;
 use super::membership::Membership;
 use super::store::{ChannelStore, MessageLog, MessageLogFactory, PersistedChannel};
 
@@ -1166,8 +1165,9 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     {
       warn!(channel = %handler, error = %e, "failed to delete persisted message log");
     }
-    let hash = self.channels.get(handler).and_then(|c| c.store_hash.clone()).unwrap_or_else(|| channel_hash(handler));
-    if let Err(e) = self.store.delete_channel(&hash).await {
+    if let Some(hash) = self.channels.get(handler).and_then(|c| c.store_hash.clone())
+      && let Err(e) = self.store.delete_channel(&hash).await
+    {
       warn!(channel = %handler, error = %e, "failed to delete persisted channel");
     }
   }
