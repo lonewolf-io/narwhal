@@ -367,7 +367,9 @@ struct ChannelShard<CS: ChannelStore, MLF: MessageLogFactory> {
 
 impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
   async fn restore_and_run(mut self, hashes: Vec<StringAtom>) {
-    self.restore(hashes).await;
+    if let Err(e) = self.restore(hashes).await {
+      panic!("fatal: channel restore failed: {e:#}");
+    }
     while let Ok(cmd) = self.mailbox.recv().await {
       self.handle(cmd).await;
     }
@@ -383,15 +385,9 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     }
   }
 
-  async fn restore(&mut self, hashes: Vec<StringAtom>) {
+  async fn restore(&mut self, hashes: Vec<StringAtom>) -> anyhow::Result<()> {
     for hash in &hashes {
-      let persisted = match self.store.load_channel(hash).await {
-        Ok(p) => p,
-        Err(e) => {
-          warn!(hash = %hash, error = %e, "skipping channel restore: failed to load persisted channel");
-          continue;
-        },
-      };
+      let persisted = self.store.load_channel(hash).await?;
 
       let handler = persisted.handler.clone();
       let message_log = self.message_log_factory.create(&handler);
@@ -401,13 +397,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       channel.acl = persisted.acl;
       channel.members = persisted.members;
       channel.store_hash = Some(hash.clone());
-      channel.seq = match channel.message_log.last_seq().await {
-        Ok(seq) => seq + 1,
-        Err(e) => {
-          warn!(channel = %handler, error = %e, "skipping channel restore: failed to read last seq from message log");
-          continue;
-        },
-      };
+      channel.seq = channel.message_log.last_seq().await? + 1;
       channel.update_allowed_targets();
 
       // Use u32::MAX to bypass the per-client limit: persisted membership is authoritative
@@ -420,6 +410,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       self.total_channels.fetch_add(1, Ordering::SeqCst);
       self.metrics.channels_active.inc();
     }
+    Ok(())
   }
 
   async fn handle(&mut self, cmd: Command) {
@@ -1370,15 +1361,9 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
 
     let mut shard_hashes: Vec<Vec<StringAtom>> = vec![Vec::new(); shard_count];
     for hash in channel_hashes.iter() {
-      match self.store.load_channel(hash).await {
-        Ok(persisted) => {
-          let shard_id = shard_for(&persisted.handler, shard_count);
-          shard_hashes[shard_id].push(hash.clone());
-        },
-        Err(e) => {
-          warn!(hash = %hash, error = %e, "skipping channel restore: failed to load persisted channel");
-        },
-      }
+      let persisted = self.store.load_channel(hash).await?;
+      let shard_id = shard_for(&persisted.handler, shard_count);
+      shard_hashes[shard_id].push(hash.clone());
     }
 
     for (shard_id, hashes_for_shard) in shard_hashes.into_iter().enumerate() {
