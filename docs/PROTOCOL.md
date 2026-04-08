@@ -275,8 +275,8 @@ A NID is a unique identifier for users and servers in the format `username@domai
 A ChannelId identifies a communication channel in the format `!handler@domain`.
 
 - Format: `!{handler}@{domain}` (e.g., `!abc123@example.com`)
-- Handler is a non-empty alphanumeric string (up to 256 characters)
-- Handler must contain only alphanumeric characters (a-z, A-Z, 0-9)
+- Handler is a non-empty string (up to 256 characters)
+- Handler must contain only alphanumeric characters (a-z, A-Z, 0-9) or forward slashes (`/`)
 - Domain follows the same validation rules as NID domains
 
 ### Access Control Lists (ACLs)
@@ -1119,7 +1119,7 @@ Forwards a broadcast message payload to the modulator for application-specific v
 **Parameters**:
 - `id` (u32, required): Request identifier (must be non-zero)
 - `from` (string, required): Sender NID (must be non-empty)
-- `channel` (string, required): Channel handler (must be non-empty, alphanumeric)
+- `channel` (string, required): Channel handler (must be non-empty, alphanumeric or `/`)
 - `length` (u32, required): Payload size in bytes (must be non-zero)
 
 **Example**:
