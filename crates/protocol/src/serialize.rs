@@ -350,9 +350,34 @@ mod tests {
                 expected_out: Some("M2S_MOD_DIRECT_ACK id=1\n".to_string()),
             },
             TestCase {
+                name: "HISTORY",
+                msg: Message::History(HistoryParameters { id: 1, history_id: "h1".into(), channel: "!1@localhost".into(), from_seq: 5, limit: 10, direction: Some("backward".into()) }),
+                expected_out: Some("HISTORY id=1 channel=!1@localhost direction=backward from_seq=5 history_id=h1 limit=10\n".to_string()),
+            },
+            TestCase {
+                name: "HISTORY_ACK",
+                msg: Message::HistoryAck(HistoryAckParameters { id: 1, history_id: "h1".into(), channel: "!1@localhost".into(), count: 5 }),
+                expected_out: Some("HISTORY_ACK id=1 channel=!1@localhost count=5 history_id=h1\n".to_string()),
+            },
+            TestCase {
+                name: "CHAN_SEQ",
+                msg: Message::ChannelSeq(ChannelSeqParameters { id: 1, channel: "!1@localhost".into() }),
+                expected_out: Some("CHAN_SEQ id=1 channel=!1@localhost\n".to_string()),
+            },
+            TestCase {
+                name: "CHAN_SEQ_ACK",
+                msg: Message::ChannelSeqAck(ChannelSeqAckParameters { id: 1, channel: "!1@localhost".into(), first_seq: 1, last_seq: 100 }),
+                expected_out: Some("CHAN_SEQ_ACK id=1 channel=!1@localhost first_seq=1 last_seq=100\n".to_string()),
+            },
+            TestCase {
                 name: "MESSAGE",
                 msg: Message::Message(MessageParameters { from: "test_user@localhost".into(), channel: "!1@localhost".into(), length: 10, seq: 1, timestamp: 1, history_id: None }),
                 expected_out: Some("MESSAGE channel=!1@localhost from=test_user@localhost length=10 seq=1 timestamp=1\n".to_string()),
+            },
+            TestCase {
+                name: "MESSAGE with history_id",
+                msg: Message::Message(MessageParameters { from: "test_user@localhost".into(), channel: "!1@localhost".into(), length: 10, seq: 1, timestamp: 1, history_id: Some("h1".into()) }),
+                expected_out: Some("MESSAGE channel=!1@localhost from=test_user@localhost history_id=h1 length=10 seq=1 timestamp=1\n".to_string()),
             },
             TestCase {
                 name: "MOD_DIRECT",
