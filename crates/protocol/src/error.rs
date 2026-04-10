@@ -35,6 +35,8 @@ pub enum ErrorReason {
   OutboundQueueIsFull,
   /// The requested operation is not allowed for the current user or context.
   NotAllowed,
+  /// The channel does not have persistence enabled.
+  PersistenceNotEnabled,
   /// The requested feature or operation is not yet implemented.
   NotImplemented,
   /// The operation timed out before completion.
@@ -80,6 +82,7 @@ impl From<ErrorReason> for &str {
       ErrorReason::ServerShuttingDown => "SERVER_SHUTTING_DOWN",
       ErrorReason::OutboundQueueIsFull => "OUTBOUND_QUEUE_FULL",
       ErrorReason::NotAllowed => "NOT_ALLOWED",
+      ErrorReason::PersistenceNotEnabled => "PERSISTENCE_NOT_ENABLED",
       ErrorReason::NotImplemented => "NOT_IMPLEMENTED",
       ErrorReason::Timeout => "TIMEOUT",
       ErrorReason::Unauthorized => "UNAUTHORIZED",
@@ -116,6 +119,7 @@ impl FromStr for ErrorReason {
       "OUTBOUND_QUEUE_FULL" => Ok(ErrorReason::OutboundQueueIsFull),
       "NONE" => Ok(ErrorReason::None),
       "NOT_ALLOWED" => Ok(ErrorReason::NotAllowed),
+      "PERSISTENCE_NOT_ENABLED" => Ok(ErrorReason::PersistenceNotEnabled),
       "NOT_IMPLEMENTED" => Ok(ErrorReason::NotImplemented),
       "POLICY_VIOLATION" => Ok(ErrorReason::PolicyViolation),
       "SERVER_OVERLOADED" => Ok(ErrorReason::ServerOverloaded),
@@ -182,6 +186,7 @@ impl Error {
         | ErrorReason::ChannelNotFound
         | ErrorReason::Forbidden
         | ErrorReason::NotAllowed
+        | ErrorReason::PersistenceNotEnabled
         | ErrorReason::NotImplemented
         | ErrorReason::UserInChannel
         | ErrorReason::UserNotInChannel

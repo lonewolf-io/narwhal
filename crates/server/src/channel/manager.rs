@@ -11,14 +11,14 @@ use async_channel::{Receiver, Sender};
 
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_protocol::ErrorReason::{
-  BadRequest, ChannelIsFull, ChannelNotFound, Forbidden, NotAllowed, NotImplemented, PolicyViolation,
-  ResourceLimitReached, UserInChannel, UserNotInChannel, UserNotRegistered,
+  BadRequest, ChannelIsFull, ChannelNotFound, Forbidden, NotAllowed, NotImplemented, PersistenceNotEnabled,
+  PolicyViolation, ResourceLimitReached, UserInChannel, UserNotInChannel, UserNotRegistered,
 };
 use narwhal_protocol::{
   AclAction, AclType, BroadcastAckParameters, ChannelAclParameters, ChannelConfigurationParameters,
-  DeleteChannelAckParameters, JoinChannelAckParameters, LeaveChannelAckParameters, ListChannelsAckParameters,
-  ListMembersAckParameters, Message, MessageParameters, QoS, SetChannelAclAckParameters,
-  SetChannelConfigurationAckParameters,
+  ChannelSeqAckParameters, DeleteChannelAckParameters, HistoryAckParameters, JoinChannelAckParameters,
+  LeaveChannelAckParameters, ListChannelsAckParameters, ListMembersAckParameters, Message, MessageParameters, QoS,
+  SetChannelAclAckParameters, SetChannelConfigurationAckParameters,
 };
 use narwhal_protocol::{ChannelId, Nid};
 use narwhal_protocol::{Event, EventKind};
@@ -174,6 +174,24 @@ enum Command {
     correlation_id: u32,
     reply_tx: Sender<anyhow::Result<()>>,
   },
+  History {
+    channel_id: ChannelId,
+    nid: Nid,
+    history_id: StringAtom,
+    from_seq: u64,
+    limit: u32,
+    direction: Option<StringAtom>,
+    transmitter: Arc<dyn Transmitter>,
+    correlation_id: u32,
+    reply_tx: Sender<anyhow::Result<()>>,
+  },
+  ChannelSeq {
+    channel_id: ChannelId,
+    nid: Nid,
+    transmitter: Arc<dyn Transmitter>,
+    correlation_id: u32,
+    reply_tx: Sender<anyhow::Result<()>>,
+  },
 }
 
 /// A channel.
@@ -213,6 +231,10 @@ impl<ML: MessageLog> Channel<ML> {
 
   fn is_empty(&self) -> bool {
     self.members.is_empty()
+  }
+
+  fn is_persistent(&self) -> bool {
+    self.config.persist == Some(true)
   }
 
   fn is_owner(&self, nid: &Nid) -> bool {
@@ -467,6 +489,24 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       },
       Command::ListMembers { channel_id, nid, page, count, transmitter, correlation_id, reply_tx } => {
         let result = self.list_members(channel_id, nid, page, count, transmitter, correlation_id);
+        let _ = reply_tx.send(result).await;
+      },
+      Command::History {
+        channel_id,
+        nid,
+        history_id,
+        from_seq,
+        limit,
+        direction,
+        transmitter,
+        correlation_id,
+        reply_tx,
+      } => {
+        let result = self.history(channel_id, nid, history_id, from_seq, limit, direction, transmitter, correlation_id);
+        let _ = reply_tx.send(result).await;
+      },
+      Command::ChannelSeq { channel_id, nid, transmitter, correlation_id, reply_tx } => {
+        let result = self.channel_seq(channel_id, nid, transmitter, correlation_id);
         let _ = reply_tx.send(result).await;
       },
     }
@@ -828,6 +868,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       length: payload_length,
       seq,
       timestamp,
+      history_id: None,
     });
 
     if is_persistent {
@@ -1160,6 +1201,88 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       page,
       page_size,
       total_count,
+    }));
+
+    Ok(())
+  }
+
+  fn history(
+    &self,
+    channel_id: ChannelId,
+    nid: Nid,
+    history_id: StringAtom,
+    _from_seq: u64,
+    _limit: u32,
+    _direction: Option<StringAtom>,
+    transmitter: Arc<dyn Transmitter>,
+    correlation_id: u32,
+  ) -> anyhow::Result<()> {
+    if channel_id.domain != self.local_domain {
+      return Err(narwhal_protocol::Error::new(NotImplemented).with_id(correlation_id).into());
+    }
+
+    let Some(channel) = self.channels.get(&channel_id.handler) else {
+      return Err(narwhal_protocol::Error::new(ChannelNotFound).with_id(correlation_id).into());
+    };
+
+    if !channel.is_member(&nid) {
+      return Err(narwhal_protocol::Error::new(UserNotInChannel).with_id(correlation_id).into());
+    }
+
+    if !channel.acl.is_read_allowed(&nid) {
+      return Err(narwhal_protocol::Error::new(NotAllowed).with_id(correlation_id).into());
+    }
+
+    if !channel.is_persistent() {
+      return Err(narwhal_protocol::Error::new(PersistenceNotEnabled).with_id(correlation_id).into());
+    }
+
+    // TODO: implement actual message log retrieval once the message log supports indexed reads.
+    // For now, return an empty history result.
+    transmitter.send_message(Message::HistoryAck(HistoryAckParameters {
+      id: correlation_id,
+      history_id,
+      channel: channel_id.into(),
+      count: 0,
+    }));
+
+    Ok(())
+  }
+
+  fn channel_seq(
+    &self,
+    channel_id: ChannelId,
+    nid: Nid,
+    transmitter: Arc<dyn Transmitter>,
+    correlation_id: u32,
+  ) -> anyhow::Result<()> {
+    if channel_id.domain != self.local_domain {
+      return Err(narwhal_protocol::Error::new(NotImplemented).with_id(correlation_id).into());
+    }
+
+    let Some(channel) = self.channels.get(&channel_id.handler) else {
+      return Err(narwhal_protocol::Error::new(ChannelNotFound).with_id(correlation_id).into());
+    };
+
+    if !channel.is_member(&nid) {
+      return Err(narwhal_protocol::Error::new(UserNotInChannel).with_id(correlation_id).into());
+    }
+
+    if !channel.acl.is_read_allowed(&nid) {
+      return Err(narwhal_protocol::Error::new(NotAllowed).with_id(correlation_id).into());
+    }
+
+    if !channel.is_persistent() {
+      return Err(narwhal_protocol::Error::new(PersistenceNotEnabled).with_id(correlation_id).into());
+    }
+
+    // TODO: implement actual first_seq/last_seq retrieval once the message log supports indexed reads.
+    // For now, return zeros (empty log).
+    transmitter.send_message(Message::ChannelSeqAck(ChannelSeqAckParameters {
+      id: correlation_id,
+      channel: channel_id.into(),
+      first_seq: 0,
+      last_seq: 0,
     }));
 
     Ok(())
@@ -1740,6 +1863,58 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
     self.mailboxes[shard]
       .send(Command::ListMembers { channel_id, nid, page, count, transmitter, correlation_id, reply_tx })
       .await?;
+
+    reply_rx.recv().await?
+  }
+
+  /// Requests historical messages from a channel.
+  pub async fn history(
+    &self,
+    channel_id: ChannelId,
+    nid: Nid,
+    history_id: StringAtom,
+    from_seq: u64,
+    limit: u32,
+    direction: Option<StringAtom>,
+    transmitter: Arc<dyn Transmitter>,
+    correlation_id: u32,
+  ) -> anyhow::Result<()> {
+    self.assert_bootstrapped();
+
+    let shard = shard_for(&channel_id.handler, self.mailboxes.len());
+    let (reply_tx, reply_rx) = async_channel::bounded(1);
+
+    self.mailboxes[shard]
+      .send(Command::History {
+        channel_id,
+        nid,
+        history_id,
+        from_seq,
+        limit,
+        direction,
+        transmitter,
+        correlation_id,
+        reply_tx,
+      })
+      .await?;
+
+    reply_rx.recv().await?
+  }
+
+  /// Queries the available sequence range of a channel's message log.
+  pub async fn channel_seq(
+    &self,
+    channel_id: ChannelId,
+    nid: Nid,
+    transmitter: Arc<dyn Transmitter>,
+    correlation_id: u32,
+  ) -> anyhow::Result<()> {
+    self.assert_bootstrapped();
+
+    let shard = shard_for(&channel_id.handler, self.mailboxes.len());
+    let (reply_tx, reply_rx) = async_channel::bounded(1);
+
+    self.mailboxes[shard].send(Command::ChannelSeq { channel_id, nid, transmitter, correlation_id, reply_tx }).await?;
 
     reply_rx.recv().await?
   }

@@ -378,7 +378,7 @@ mod tests {
             total_count: None,
         })),
     },
-    TestCase { name: "MESSAGE", input: b"MESSAGE from=test_user2@localhost channel=!1@localhost length=10 seq=1 timestamp=1", expected: Ok(Message::Message(MessageParameters { from: StringAtom::from("test_user2@localhost"), channel: StringAtom::from("!1@localhost"), length: 10, seq: 1, timestamp: 1 })) },
+    TestCase { name: "MESSAGE", input: b"MESSAGE from=test_user2@localhost channel=!1@localhost length=10 seq=1 timestamp=1", expected: Ok(Message::Message(MessageParameters { from: StringAtom::from("test_user2@localhost"), channel: StringAtom::from("!1@localhost"), length: 10, seq: 1, timestamp: 1, history_id: None })) },
     TestCase { name: "M2S_MOD_DIRECT", input: b"M2S_MOD_DIRECT id=1 targets=ortuman length=10", expected: Ok(Message::M2sModDirect(M2sModDirectParameters { id: 1, targets: Vec::from([StringAtom::from("ortuman")].as_slice()), length: 10 })) },
     TestCase { name: "M2S_MOD_DIRECT_ACK", input: b"M2S_MOD_DIRECT_ACK id=1", expected: Ok(Message::M2sModDirectAck(M2sModDirectAckParameters { id: 1 })) },
     TestCase { name: "MOD_DIRECT", input: b"MOD_DIRECT id=2 from=test_user@localhost length=10", expected: Ok(Message::ModDirect(ModDirectParameters { id: Some(2), from: StringAtom::from("test_user@localhost"), length: 10 })) },

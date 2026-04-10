@@ -351,7 +351,7 @@ mod tests {
             },
             TestCase {
                 name: "MESSAGE",
-                msg: Message::Message(MessageParameters { from: "test_user@localhost".into(), channel: "!1@localhost".into(), length: 10, seq: 1, timestamp: 1 }),
+                msg: Message::Message(MessageParameters { from: "test_user@localhost".into(), channel: "!1@localhost".into(), length: 10, seq: 1, timestamp: 1, history_id: None }),
                 expected_out: Some("MESSAGE channel=!1@localhost from=test_user@localhost length=10 seq=1 timestamp=1\n".to_string()),
             },
             TestCase {

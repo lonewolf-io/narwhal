@@ -50,6 +50,10 @@ pub enum Message {
   Event(EventParameters),
   GetChannelAcl(GetChannelAclParameters),
   GetChannelConfiguration(GetChannelConfigurationParameters),
+  History(HistoryParameters),
+  HistoryAck(HistoryAckParameters),
+  ChannelSeq(ChannelSeqParameters),
+  ChannelSeqAck(ChannelSeqAckParameters),
   Identify(IdentifyParameters),
   IdentifyAck(IdentifyAckParameters),
   JoinChannel(JoinChannelParameters),
@@ -238,6 +242,62 @@ pub struct GetChannelConfigurationParameters {
 }
 
 #[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
+pub struct HistoryParameters {
+  #[param(validate = "non_zero")]
+  pub id: u32,
+
+  #[param(validate = "non_empty")]
+  pub history_id: StringAtom,
+
+  #[param(validate = "non_empty")]
+  pub channel: StringAtom,
+
+  #[param(validate = "non_zero")]
+  pub from_seq: u64,
+
+  #[param(validate = "non_zero")]
+  pub limit: u32,
+
+  pub direction: Option<StringAtom>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
+pub struct HistoryAckParameters {
+  #[param(validate = "non_zero")]
+  pub id: u32,
+
+  #[param(validate = "non_empty")]
+  pub history_id: StringAtom,
+
+  #[param(validate = "non_empty")]
+  pub channel: StringAtom,
+
+  pub count: u32,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
+pub struct ChannelSeqParameters {
+  #[param(validate = "non_zero")]
+  pub id: u32,
+
+  #[param(validate = "non_empty")]
+  pub channel: StringAtom,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
+pub struct ChannelSeqAckParameters {
+  #[param(validate = "non_zero")]
+  pub id: u32,
+
+  #[param(validate = "non_empty")]
+  pub channel: StringAtom,
+
+  pub first_seq: u64,
+
+  pub last_seq: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
 pub struct IdentifyParameters {
   #[param(validate = "non_empty")]
   pub username: StringAtom,
@@ -400,6 +460,8 @@ pub struct MessageParameters {
 
   #[param(validate = "non_zero")]
   pub timestamp: u64,
+
+  pub history_id: Option<StringAtom>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, ProtocolMessageParameters)]
@@ -613,6 +675,10 @@ impl Message {
       b"EVENT" => Ok(Message::Event(EventParameters::default())),
       b"GET_CHAN_ACL" => Ok(Message::GetChannelAcl(GetChannelAclParameters::default())),
       b"GET_CHAN_CONFIG" => Ok(Message::GetChannelConfiguration(GetChannelConfigurationParameters::default())),
+      b"HISTORY" => Ok(Message::History(HistoryParameters::default())),
+      b"HISTORY_ACK" => Ok(Message::HistoryAck(HistoryAckParameters::default())),
+      b"CHAN_SEQ" => Ok(Message::ChannelSeq(ChannelSeqParameters::default())),
+      b"CHAN_SEQ_ACK" => Ok(Message::ChannelSeqAck(ChannelSeqAckParameters::default())),
       b"IDENTIFY" => Ok(Message::Identify(IdentifyParameters::default())),
       b"IDENTIFY_ACK" => Ok(Message::IdentifyAck(IdentifyAckParameters::default())),
       b"JOIN" => Ok(Message::JoinChannel(JoinChannelParameters::default())),
@@ -672,6 +738,10 @@ impl Message {
       Message::Event { .. } => "EVENT",
       Message::GetChannelAcl { .. } => "GET_CHAN_ACL",
       Message::GetChannelConfiguration { .. } => "GET_CHAN_CONFIG",
+      Message::History { .. } => "HISTORY",
+      Message::HistoryAck { .. } => "HISTORY_ACK",
+      Message::ChannelSeq { .. } => "CHAN_SEQ",
+      Message::ChannelSeqAck { .. } => "CHAN_SEQ_ACK",
       Message::Identify { .. } => "IDENTIFY",
       Message::IdentifyAck { .. } => "IDENTIFY_ACK",
       Message::JoinChannel { .. } => "JOIN",
@@ -728,6 +798,10 @@ impl Message {
       Event(params) => params.encode(parameter_writer),
       GetChannelAcl(params) => params.encode(parameter_writer),
       GetChannelConfiguration(params) => params.encode(parameter_writer),
+      History(params) => params.encode(parameter_writer),
+      HistoryAck(params) => params.encode(parameter_writer),
+      ChannelSeq(params) => params.encode(parameter_writer),
+      ChannelSeqAck(params) => params.encode(parameter_writer),
       Identify(params) => params.encode(parameter_writer),
       IdentifyAck(params) => params.encode(parameter_writer),
       JoinChannel(params) => params.encode(parameter_writer),
@@ -783,6 +857,10 @@ impl Message {
       Event(params) => params.decode(parameter_reader),
       GetChannelAcl(params) => params.decode(parameter_reader),
       GetChannelConfiguration(params) => params.decode(parameter_reader),
+      History(params) => params.decode(parameter_reader),
+      HistoryAck(params) => params.decode(parameter_reader),
+      ChannelSeq(params) => params.decode(parameter_reader),
+      ChannelSeqAck(params) => params.decode(parameter_reader),
       Identify(params) => params.decode(parameter_reader),
       IdentifyAck(params) => params.decode(parameter_reader),
       JoinChannel(params) => params.decode(parameter_reader),
@@ -872,6 +950,21 @@ impl Message {
         Ok(())
       },
       GetChannelConfiguration(params) => params.validate(),
+      History(params) => {
+        params.validate()?;
+
+        if let Some(ref direction) = params.direction {
+          match direction.as_ref() {
+            "forward" | "backward" => {},
+            _ => anyhow::bail!("invalid direction: {}", direction),
+          }
+        }
+
+        Ok(())
+      },
+      HistoryAck(params) => params.validate(),
+      ChannelSeq(params) => params.validate(),
+      ChannelSeqAck(params) => params.validate(),
       Identify(params) => params.validate(),
       IdentifyAck(params) => params.validate(),
       JoinChannel(params) => params.validate(),
@@ -950,6 +1043,10 @@ impl Message {
       Message::DeleteChannelAck(params) => Some(params.id),
       Message::GetChannelAcl(params) => Some(params.id),
       Message::GetChannelConfiguration(params) => Some(params.id),
+      Message::History(params) => Some(params.id),
+      Message::HistoryAck(params) => Some(params.id),
+      Message::ChannelSeq(params) => Some(params.id),
+      Message::ChannelSeqAck(params) => Some(params.id),
       Message::JoinChannel(params) => Some(params.id),
       Message::JoinChannelAck(params) => Some(params.id),
       Message::LeaveChannel(params) => Some(params.id),

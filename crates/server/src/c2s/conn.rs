@@ -527,6 +527,12 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
       Message::SetChannelConfiguration { .. } => {
         self.dispatch_set_channel_configuration_message(msg).await?;
       },
+      Message::History { .. } => {
+        self.dispatch_history_message(msg).await?;
+      },
+      Message::ChannelSeq { .. } => {
+        self.dispatch_channel_seq_message(msg).await?;
+      },
       _ => {
         return Err(narwhal_protocol::Error::new(UnexpectedMessage).into());
       },
@@ -1102,6 +1108,77 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
     transmitter.send_message(Message::ModDirectAck(ModDirectAckParameters { id: correlation_id }));
 
     trace!(handler = transmitter.handler, nid = nid.to_string(), "modulator payload forwarded");
+
+    Ok(())
+  }
+
+  async fn dispatch_history_message(&mut self, msg: Message) -> anyhow::Result<()> {
+    assert!(matches!(msg, Message::History { .. }));
+
+    let params = match msg {
+      Message::History(params) => params,
+      _ => unreachable!(),
+    };
+
+    let correlation_id = params.id;
+    let channel_id = Self::parse_channel_id(&params.channel)?;
+    let history_id = params.history_id;
+    let from_seq = params.from_seq;
+    let limit = params.limit;
+    let direction = params.direction;
+
+    let nid = self.nid.as_ref().unwrap().clone();
+    let transmitter = self.transmitter.clone();
+
+    self
+      .channel_manager
+      .history(
+        channel_id.clone(),
+        nid.clone(),
+        history_id,
+        from_seq,
+        limit,
+        direction,
+        transmitter,
+        correlation_id,
+      )
+      .await?;
+
+    trace!(
+      handler = self.transmitter.handler,
+      nid = nid.to_string(),
+      channel = channel_id.to_string(),
+      "history requested"
+    );
+
+    Ok(())
+  }
+
+  async fn dispatch_channel_seq_message(&mut self, msg: Message) -> anyhow::Result<()> {
+    assert!(matches!(msg, Message::ChannelSeq { .. }));
+
+    let params = match msg {
+      Message::ChannelSeq(params) => params,
+      _ => unreachable!(),
+    };
+
+    let correlation_id = params.id;
+    let channel_id = Self::parse_channel_id(&params.channel)?;
+
+    let nid = self.nid.as_ref().unwrap().clone();
+    let transmitter = self.transmitter.clone();
+
+    self
+      .channel_manager
+      .channel_seq(channel_id.clone(), nid.clone(), transmitter, correlation_id)
+      .await?;
+
+    trace!(
+      handler = self.transmitter.handler,
+      nid = nid.to_string(),
+      channel = channel_id.to_string(),
+      "channel seq requested"
+    );
 
     Ok(())
   }
