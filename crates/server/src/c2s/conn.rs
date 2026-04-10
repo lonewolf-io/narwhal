@@ -1132,16 +1132,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
 
     self
       .channel_manager
-      .history(
-        channel_id.clone(),
-        nid.clone(),
-        history_id,
-        from_seq,
-        limit,
-        direction,
-        transmitter,
-        correlation_id,
-      )
+      .history(channel_id.clone(), nid.clone(), history_id, from_seq, limit, direction, transmitter, correlation_id)
       .await?;
 
     trace!(
@@ -1168,10 +1159,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
     let nid = self.nid.as_ref().unwrap().clone();
     let transmitter = self.transmitter.clone();
 
-    self
-      .channel_manager
-      .channel_seq(channel_id.clone(), nid.clone(), transmitter, correlation_id)
-      .await?;
+    self.channel_manager.channel_seq(channel_id.clone(), nid.clone(), transmitter, correlation_id).await?;
 
     trace!(
       handler = self.transmitter.handler,

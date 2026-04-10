@@ -1206,6 +1206,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     Ok(())
   }
 
+  #[allow(clippy::too_many_arguments)]
   fn history(
     &self,
     channel_id: ChannelId,
@@ -1868,6 +1869,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
   }
 
   /// Requests historical messages from a channel.
+  #[allow(clippy::too_many_arguments)]
   pub async fn history(
     &self,
     channel_id: ChannelId,
