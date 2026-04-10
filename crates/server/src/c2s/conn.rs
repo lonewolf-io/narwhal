@@ -42,6 +42,9 @@ struct ResultLabel {
   result: &'static str,
 }
 
+const SUCCESS: ResultLabel = ResultLabel { result: "success" };
+const FAILURE: ResultLabel = ResultLabel { result: "failure" };
+
 /// Metric handles for a C2sDispatcher instance.
 #[derive(Clone)]
 struct C2sDispatcherMetrics {
@@ -399,7 +402,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
                 nid: Some(nid.clone().into()),
               }));
 
-              self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "success" }).inc();
+              self.metrics.auth_attempts.get_or_create(&SUCCESS).inc();
               trace!(handler = self.transmitter.handler, nid = nid.to_string(), "user authenticated");
 
               Ok(true)
@@ -421,7 +424,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
                 nid: None,
               }));
 
-              self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "failure" }).inc();
+              self.metrics.auth_attempts.get_or_create(&FAILURE).inc();
               Ok(false)
             },
           },
@@ -454,7 +457,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
         {
           self.nid = Some(nid);
         } else {
-          self.metrics.identify_attempts.get_or_create(&ResultLabel { result: "failure" }).inc();
+          self.metrics.identify_attempts.get_or_create(&FAILURE).inc();
           return Err(narwhal_protocol::Error::new(UsernameInUse).into());
         }
 
@@ -462,7 +465,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sDispatcherInner<CS, MLF> {
 
         self.transmitter.send_message(Message::IdentifyAck(IdentifyAckParameters { nid: StringAtom::from(nid) }));
 
-        self.metrics.identify_attempts.get_or_create(&ResultLabel { result: "success" }).inc();
+        self.metrics.identify_attempts.get_or_create(&SUCCESS).inc();
         trace!(handler = self.transmitter.handler, nid = nid.to_string(), "user identified");
 
         Ok(true)

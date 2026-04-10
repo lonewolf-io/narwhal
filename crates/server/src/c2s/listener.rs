@@ -34,6 +34,9 @@ struct ResultLabel {
   result: &'static str,
 }
 
+const SUCCESS: ResultLabel = ResultLabel { result: "success" };
+const FAILURE: ResultLabel = ResultLabel { result: "failure" };
+
 #[derive(Clone)]
 struct Metrics {
   connections_accepted: Counter,
@@ -327,12 +330,12 @@ async fn run_accept_loop<CS: ChannelStore, MLF: MessageLogFactory>(
               match acceptor.accept(tcp_stream).await {
                 std::result::Result::Ok(tls_stream) => {
                   trace!(worker_id, %remote_addr, "TLS handshake complete");
-                  metrics.tls_handshakes.get_or_create(&ResultLabel { result: "success" }).inc();
+                  metrics.tls_handshakes.get_or_create(&SUCCESS).inc();
                   conn_rt.run_connection(tls_stream, dispatcher_factory).await;
                 }
                 Err(e) => {
                   warn!(worker_id, %remote_addr, error = ?e, service_type = C2sService::NAME, "TLS handshake failed");
-                  metrics.tls_handshakes.get_or_create(&ResultLabel { result: "failure" }).inc();
+                  metrics.tls_handshakes.get_or_create(&FAILURE).inc();
                 }
               }
             });

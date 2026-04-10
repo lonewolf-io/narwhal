@@ -48,6 +48,9 @@ struct ResultLabel {
   result: &'static str,
 }
 
+const SUCCESS: ResultLabel = ResultLabel { result: "success" };
+const FAILURE: ResultLabel = ResultLabel { result: "failure" };
+
 #[derive(Clone)]
 struct M2sDispatcherMetrics {
   connect_failures: Counter,
@@ -590,7 +593,7 @@ impl<M: Modulator> S2mDispatcher<M> {
 
     let reply_msg = match auth_res.result {
       AuthResult::Success { username } => {
-        self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "success" }).inc();
+        self.metrics.auth_attempts.get_or_create(&SUCCESS).inc();
         Message::S2mAuthAck(S2mAuthAckParameters { id, challenge: None, username: Some(username), succeeded: true })
       },
       AuthResult::Continue { challenge } => {
@@ -598,7 +601,7 @@ impl<M: Modulator> S2mDispatcher<M> {
         Message::S2mAuthAck(S2mAuthAckParameters { id, challenge: Some(challenge), username: None, succeeded: false })
       },
       AuthResult::Failure => {
-        self.metrics.auth_attempts.get_or_create(&ResultLabel { result: "failure" }).inc();
+        self.metrics.auth_attempts.get_or_create(&FAILURE).inc();
         Message::S2mAuthAck(S2mAuthAckParameters { id, challenge: None, username: None, succeeded: false })
       },
     };

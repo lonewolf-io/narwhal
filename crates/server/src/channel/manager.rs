@@ -5,7 +5,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_channel::{Receiver, Sender};
 
@@ -29,6 +29,7 @@ use prometheus_client::encoding::EncodeLabelSet;
 use prometheus_client::metrics::counter::Counter;
 use prometheus_client::metrics::family::Family;
 use prometheus_client::metrics::gauge::Gauge;
+use prometheus_client::metrics::histogram::Histogram;
 use prometheus_client::registry::Registry;
 
 use tracing::warn;
@@ -58,6 +59,9 @@ struct ResultLabel {
   result: &'static str,
 }
 
+const SUCCESS: ResultLabel = ResultLabel { result: "success" };
+const FAILURE: ResultLabel = ResultLabel { result: "failure" };
+
 /// Metric handles for `ChannelManager`.
 #[derive(Clone)]
 struct ChannelManagerMetrics {
@@ -65,6 +69,11 @@ struct ChannelManagerMetrics {
   channel_joins: Family<ResultLabel, Counter>,
   channel_leaves: Counter,
   channels_deleted: Counter,
+  store_saves: Family<ResultLabel, Counter>,
+  store_save_duration_seconds: Histogram,
+  store_deletes: Family<ResultLabel, Counter>,
+  message_log_flushes: Family<ResultLabel, Counter>,
+  message_log_flush_duration_seconds: Histogram,
 }
 
 impl std::fmt::Debug for ChannelManagerMetrics {
@@ -83,7 +92,49 @@ impl ChannelManagerMetrics {
     registry.register("channel_leaves", "Total channel leave operations", channel_leaves.clone());
     let channels_deleted = Counter::default();
     registry.register("channels_deleted", "Total channels deleted", channels_deleted.clone());
-    Self { channels_active, channel_joins, channel_leaves, channels_deleted }
+
+    let store_saves = Family::default();
+    registry.register("store_saves", "Channel store save operations", store_saves.clone());
+    let store_save_duration_seconds =
+      Histogram::new(prometheus_client::metrics::histogram::exponential_buckets(0.0001, 2.0, 16));
+    registry.register(
+      "store_save_duration_seconds",
+      "Duration of channel store save operations in seconds",
+      store_save_duration_seconds.clone(),
+    );
+    let store_deletes = Family::default();
+    registry.register("store_deletes", "Channel store delete operations", store_deletes.clone());
+    let message_log_flushes = Family::default();
+    registry.register("message_log_flushes", "Message log flush operations", message_log_flushes.clone());
+    let message_log_flush_duration_seconds =
+      Histogram::new(prometheus_client::metrics::histogram::exponential_buckets(0.0001, 2.0, 16));
+    registry.register(
+      "message_log_flush_duration_seconds",
+      "Duration of message log flush operations in seconds",
+      message_log_flush_duration_seconds.clone(),
+    );
+
+    Self {
+      channels_active,
+      channel_joins,
+      channel_leaves,
+      channels_deleted,
+      store_saves,
+      store_save_duration_seconds,
+      store_deletes,
+      message_log_flushes,
+      message_log_flush_duration_seconds,
+    }
+  }
+
+  /// Records the outcome of a message log flush: observes duration and increments the
+  /// success/failure counter.
+  fn record_flush(&self, start: Instant, result: &anyhow::Result<()>) {
+    self.message_log_flush_duration_seconds.observe(start.elapsed().as_secs_f64());
+    match result {
+      Ok(()) => self.message_log_flushes.get_or_create(&SUCCESS).inc(),
+      Err(_) => self.message_log_flushes.get_or_create(&FAILURE).inc(),
+    };
   }
 }
 
@@ -325,7 +376,7 @@ impl<ML: MessageLog> Channel<ML> {
     seq
   }
 
-  fn ensure_flush_task(&mut self, interval_ms: u32) {
+  fn ensure_flush_task(&mut self, interval_ms: u32, metrics: &ChannelManagerMetrics) {
     if self.flush_cancel_tx.is_some() {
       return;
     }
@@ -333,6 +384,7 @@ impl<ML: MessageLog> Channel<ML> {
     let message_log = self.message_log.clone();
     let handler = self.handler.clone();
     let interval = std::time::Duration::from_millis(interval_ms as u64);
+    let metrics = metrics.clone();
 
     narwhal_common::runtime::spawn_detached(async move {
       use futures::FutureExt;
@@ -342,7 +394,10 @@ impl<ML: MessageLog> Channel<ML> {
           _ = narwhal_common::runtime::sleep(interval).fuse() => {},
           _ = cancel_rx.recv().fuse() => break,
         }
-        if let Err(e) = message_log.flush().await {
+        let start = Instant::now();
+        let result = message_log.flush().await;
+        metrics.record_flush(start, &result);
+        if let Err(e) = result {
           warn!(channel = %handler, error = %e, "periodic message log flush failed");
         }
       }
@@ -397,10 +452,13 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     // Shutdown: cancel all flush tasks and perform final flush on each channel.
     for (handler, channel) in self.channels.iter_mut() {
       channel.cancel_flush_task();
-      if channel.config.persist == Some(true)
-        && let Err(e) = channel.message_log.flush().await
-      {
-        warn!(channel = %handler, error = %e, "final flush on shutdown failed");
+      if channel.config.persist == Some(true) {
+        let start = Instant::now();
+        let result = channel.message_log.flush().await;
+        self.metrics.record_flush(start, &result);
+        if let Err(e) = result {
+          warn!(channel = %handler, error = %e, "final flush on shutdown failed");
+        }
       }
     }
   }
@@ -521,7 +579,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     correlation_id: u32,
   ) -> anyhow::Result<bool> {
     if channel_id.domain != self.local_domain {
-      self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+      self.metrics.channel_joins.get_or_create(&FAILURE).inc();
       return Err(narwhal_protocol::Error::new(NotImplemented).with_id(correlation_id).into());
     }
     let handler = channel_id.handler.clone();
@@ -530,7 +588,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     // Create the channel if it doesn't exist.
     if as_owner {
       if self.total_channels.load(Ordering::SeqCst) >= self.limits.max_channels as usize {
-        self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+        self.metrics.channel_joins.get_or_create(&FAILURE).inc();
         return Err(
           narwhal_protocol::Error::new(ResourceLimitReached)
             .with_id(correlation_id)
@@ -559,7 +617,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
             self.channels.remove(&handler);
             self.total_channels.fetch_sub(1, Ordering::SeqCst);
           }
-          self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+          self.metrics.channel_joins.get_or_create(&FAILURE).inc();
           return Err(narwhal_protocol::Error::new(Forbidden).with_id(correlation_id).into());
         }
         if !self.router.c2s_router().has_connection(&behalf_nid.username).await {
@@ -567,7 +625,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
             self.channels.remove(&handler);
             self.total_channels.fetch_sub(1, Ordering::SeqCst);
           }
-          self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+          self.metrics.channel_joins.get_or_create(&FAILURE).inc();
           return Err(narwhal_protocol::Error::new(UserNotRegistered).with_id(correlation_id).into());
         }
         behalf_nid
@@ -583,7 +641,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         self.channels.remove(&handler);
         self.total_channels.fetch_sub(1, Ordering::SeqCst);
       }
-      self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+      self.metrics.channel_joins.get_or_create(&FAILURE).inc();
       return Err(narwhal_protocol::Error::new(NotAllowed).with_id(correlation_id).into());
     }
 
@@ -592,7 +650,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         self.channels.remove(&handler);
         self.total_channels.fetch_sub(1, Ordering::SeqCst);
       }
-      self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+      self.metrics.channel_joins.get_or_create(&FAILURE).inc();
       return Err(narwhal_protocol::Error::new(UserInChannel).with_id(correlation_id).into());
     }
 
@@ -601,7 +659,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         self.channels.remove(&handler);
         self.total_channels.fetch_sub(1, Ordering::SeqCst);
       }
-      self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+      self.metrics.channel_joins.get_or_create(&FAILURE).inc();
       return Err(narwhal_protocol::Error::new(ChannelIsFull).with_id(correlation_id).into());
     }
 
@@ -611,7 +669,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         self.channels.remove(&handler);
         self.total_channels.fetch_sub(1, Ordering::SeqCst);
       }
-      self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+      self.metrics.channel_joins.get_or_create(&FAILURE).inc();
       return Err(
         narwhal_protocol::Error::new(PolicyViolation)
           .with_id(correlation_id)
@@ -635,15 +693,22 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
           projected.owner = Some(new_member_nid.clone());
         }
         projected.members = new_members.clone();
+        let start = Instant::now();
         match self.store.save_channel(&projected).await {
-          Ok(hash) => Some(hash),
+          Ok(hash) => {
+            self.metrics.store_save_duration_seconds.observe(start.elapsed().as_secs_f64());
+            self.metrics.store_saves.get_or_create(&SUCCESS).inc();
+            Some(hash)
+          },
           Err(e) => {
+            self.metrics.store_save_duration_seconds.observe(start.elapsed().as_secs_f64());
+            self.metrics.store_saves.get_or_create(&FAILURE).inc();
             self.membership.release_slot(&new_member_nid.username, &handler).await;
             if as_owner {
               self.channels.remove(&handler);
               self.total_channels.fetch_sub(1, Ordering::SeqCst);
             }
-            self.metrics.channel_joins.get_or_create(&ResultLabel { result: "failure" }).inc();
+            self.metrics.channel_joins.get_or_create(&FAILURE).inc();
             return Err(e);
           },
         }
@@ -675,7 +740,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       channel: channel_id.into(),
     }));
 
-    self.metrics.channel_joins.get_or_create(&ResultLabel { result: "success" }).inc();
+    self.metrics.channel_joins.get_or_create(&SUCCESS).inc();
     if as_owner {
       self.metrics.channels_active.inc();
     }
@@ -794,8 +859,13 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     let is_persistent = self.channels.get(&channel_id.handler).is_some_and(|c| c.config.persist == Some(true));
     if let Some(channel) = self.channels.get_mut(&channel_id.handler) {
       channel.cancel_flush_task();
-      if is_persistent && let Err(e) = channel.message_log.flush().await {
-        warn!(channel = %channel_id.handler, error = %e, "final flush on delete failed");
+      if is_persistent {
+        let start = Instant::now();
+        let result = channel.message_log.flush().await;
+        self.metrics.record_flush(start, &result);
+        if let Err(e) = result {
+          warn!(channel = %channel_id.handler, error = %e, "final flush on delete failed");
+        }
       }
     }
 
@@ -876,9 +946,12 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
 
       let flush_interval = channel.config.message_flush_interval.unwrap_or(0);
       if flush_interval == 0 {
-        channel.message_log.flush().await?;
+        let start = Instant::now();
+        let result = channel.message_log.flush().await;
+        self.metrics.record_flush(start, &result);
+        result?;
       } else {
-        channel.ensure_flush_task(flush_interval);
+        channel.ensure_flush_task(flush_interval, &self.metrics);
       }
     }
 
@@ -992,8 +1065,19 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         AclType::Publish => projected.acl.publish_acl = new_acl.clone(),
         AclType::Read => projected.acl.read_acl = new_acl.clone(),
       }
-      let hash = self.store.save_channel(&projected).await?;
-      channel.store_hash = Some(hash);
+      let start = Instant::now();
+      let result = self.store.save_channel(&projected).await;
+      self.metrics.store_save_duration_seconds.observe(start.elapsed().as_secs_f64());
+      match result {
+        Ok(hash) => {
+          self.metrics.store_saves.get_or_create(&SUCCESS).inc();
+          channel.store_hash = Some(hash);
+        },
+        Err(e) => {
+          self.metrics.store_saves.get_or_create(&FAILURE).inc();
+          return Err(e);
+        },
+      }
     }
 
     channel.set_acl(new_acl, acl_type);
@@ -1105,8 +1189,19 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     if is_persistent {
       let mut projected = channel.to_persisted();
       projected.config = new_config.clone();
-      let hash = self.store.save_channel(&projected).await?;
-      channel.store_hash = Some(hash);
+      let start = Instant::now();
+      let result = self.store.save_channel(&projected).await;
+      self.metrics.store_save_duration_seconds.observe(start.elapsed().as_secs_f64());
+      match result {
+        Ok(hash) => {
+          self.metrics.store_saves.get_or_create(&SUCCESS).inc();
+          channel.store_hash = Some(hash);
+        },
+        Err(e) => {
+          self.metrics.store_saves.get_or_create(&FAILURE).inc();
+          return Err(e);
+        },
+      }
     }
 
     channel.config = new_config;
@@ -1119,13 +1214,16 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       // messages and restart the periodic task immediately so they are not left pending
       // indefinitely waiting for the next broadcast.
       if flush_interval_changed && is_persistent {
-        if let Err(e) = channel.message_log.flush().await {
+        let start = Instant::now();
+        let result = channel.message_log.flush().await;
+        self.metrics.record_flush(start, &result);
+        if let Err(e) = result {
           warn!(channel = %channel_id.handler, error = %e, "flush on interval change failed");
         }
         if let Some(interval) = channel.config.message_flush_interval
           && interval > 0
         {
-          channel.ensure_flush_task(interval);
+          channel.ensure_flush_task(interval, &self.metrics);
         }
       }
     }
@@ -1299,10 +1397,16 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
     {
       warn!(channel = %handler, error = %e, "failed to delete persisted message log");
     }
-    if let Some(hash) = self.channels.get(handler).and_then(|c| c.store_hash.clone())
-      && let Err(e) = self.store.delete_channel(&hash).await
-    {
-      warn!(channel = %handler, error = %e, "failed to delete persisted channel");
+    if let Some(hash) = self.channels.get(handler).and_then(|c| c.store_hash.clone()) {
+      match self.store.delete_channel(&hash).await {
+        Ok(()) => {
+          self.metrics.store_deletes.get_or_create(&SUCCESS).inc();
+        },
+        Err(e) => {
+          self.metrics.store_deletes.get_or_create(&FAILURE).inc();
+          warn!(channel = %handler, error = %e, "failed to delete persisted channel");
+        },
+      }
     }
   }
 
@@ -1350,7 +1454,19 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         projected.members = members.clone();
       }
       projected.owner = new_owner.clone().or(projected.owner);
-      Some(self.store.save_channel(&projected).await?)
+      let start = Instant::now();
+      let result = self.store.save_channel(&projected).await;
+      self.metrics.store_save_duration_seconds.observe(start.elapsed().as_secs_f64());
+      match result {
+        Ok(hash) => {
+          self.metrics.store_saves.get_or_create(&SUCCESS).inc();
+          Some(hash)
+        },
+        Err(e) => {
+          self.metrics.store_saves.get_or_create(&FAILURE).inc();
+          return Err(e);
+        },
+      }
     } else {
       None
     };
@@ -1377,7 +1493,10 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       let is_persistent = channel.config.persist == Some(true);
       channel.cancel_flush_task();
       if is_persistent {
-        if let Err(e) = channel.message_log.flush().await {
+        let start = Instant::now();
+        let result = channel.message_log.flush().await;
+        self.metrics.record_flush(start, &result);
+        if let Err(e) = result {
           warn!(channel = %handler, error = %e, "final flush on empty channel failed");
         }
         self.delete_persistent_storage(handler).await;
