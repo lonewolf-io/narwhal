@@ -74,8 +74,8 @@ impl EntryReader {
   ///
   /// Returns `true` if the entry was read and CRC-validated successfully.
   /// On success the parsed fields (`seq`, `timestamp`, etc.) and the body
-  /// buffer are updated; callers access the data via [`from_bytes`] and
-  /// [`payload_bytes`].
+  /// buffer are updated; callers access the data via [`get_from()`] and
+  /// [`payload_bytes()`].
   async fn read_at(&mut self, file: &compio::fs::File, pos: u64, remaining: u64) -> bool {
     if remaining < ENTRY_HEADER_SIZE as u64 {
       return false;
@@ -97,6 +97,9 @@ impl EntryReader {
     let payload_len = u32::from_le_bytes(self.header[18..22].try_into().unwrap()) as usize;
 
     let body_size = from_len + payload_len + CRC_SIZE;
+    if body_size > self.body.capacity() {
+      return false;
+    }
     let entry_size = ENTRY_HEADER_SIZE as u64 + body_size as u64;
     if remaining < entry_size {
       return false;
@@ -275,7 +278,10 @@ impl Inner {
 
       let file_size = match compio::fs::metadata(&log_path).await {
         Ok(m) => m.len(),
-        Err(_) => 0,
+        Err(e) => {
+          tracing::warn!(path = %log_path.display(), error = %e, "skipping segment: failed to read metadata");
+          continue;
+        },
       };
 
       if file_size == 0 {
@@ -531,8 +537,15 @@ impl Inner {
     };
     let buf = std::mem::take(idx_buf);
     let mut file_ref = &idx_file;
-    let BufResult(_, buf) = file_ref.write_all_at(buf, 0).await;
+    let BufResult(result, buf) = file_ref.write_all_at(buf, 0).await;
     *idx_buf = buf;
+    if result.is_err() {
+      let _ = std_fs::remove_file(idx_path);
+      return;
+    }
+    if idx_file.sync_all().await.is_err() {
+      let _ = std_fs::remove_file(idx_path);
+    }
   }
 
   /// Memory-map an index file. Returns `None` if the file is empty or doesn't exist.

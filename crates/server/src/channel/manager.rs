@@ -1646,7 +1646,8 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
 
       // 2× max_history_limit: one replay's worth of buffers can still be draining
       // through the outbound queue when the next replay starts.
-      let history_pool = Pool::new(limits.max_history_limit as usize * 2, limits.max_payload_size as usize);
+      let history_pool_cap = (limits.max_history_limit as usize).saturating_mul(2).max(1);
+      let history_pool = Pool::new(history_pool_cap, limits.max_payload_size as usize);
 
       core_dispatcher
         .dispatch_at_shard(shard_id, move || async move {

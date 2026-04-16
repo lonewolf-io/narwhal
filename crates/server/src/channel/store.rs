@@ -107,8 +107,9 @@ pub trait MessageLog: 'static {
   /// Reads entries starting at `from_seq`, up to `limit` entries, calling
   /// `visitor.visit()` for each entry. Returns the number of entries visited.
   ///
-  /// Async because file reads use io_uring (compio). The visitor callback is
-  /// sync — data is in the read buffer when called.
+  /// Both the read and the visitor are async. Entry data passed to `visit()` is
+  /// borrowed from the reader's buffer and is only valid for the duration of
+  /// that awaited `visit()` call.
   async fn read(&self, from_seq: u64, limit: u32, visitor: &mut impl LogVisitor) -> anyhow::Result<u32>
   where
     Self: Sized;
