@@ -35,7 +35,8 @@
 ## Overview
 
 Narwhal runs N OS threads, each pinned to a CPU core and hosting a
-[monoio](https://github.com/bytedance/monoio) runtime. A small set of stateful
+[compio](https://github.com/compio-rs/compio) runtime (accessed through the
+`narwhal_common::runtime` shim). A small set of stateful
 subsystems — the C2S connection router, the channel manager, and the
 per-user membership tracker — shard their state across those threads. Each
 shard is an **actor**: it owns a partition of the subsystem's data, receives
@@ -48,7 +49,7 @@ same four pieces:
 ```
 ┌────────────────────────────────────────────────────────────────┐
 │                        CoreDispatcher                          │
-│   (N threads, each running a monoio runtime pinned to a core)  │
+│   (N threads, each running a compio runtime pinned to a core)  │
 │                                                                │
 │   ┌──────────────┐   ┌──────────────┐       ┌──────────────┐   │
 │   │  Worker 0    │   │  Worker 1    │  ...  │  Worker N-1  │   │
@@ -118,7 +119,7 @@ just accepts closures and runs them on a specific worker.
 |----------|-------|
 | Thread count | `num_workers()` — `NARWHAL_NUM_WORKERS` env var, or `available_parallelism()` |
 | Thread name | `core-worker-{id}` |
-| Runtime per thread | monoio (via `narwhal_common::runtime::try_block_on`) |
+| Runtime per thread | compio (via `narwhal_common::runtime::try_block_on`) |
 | CPU affinity | `core_affinity::set_for_current(core_ids[id % cores.len()])`, best-effort |
 | Signal mask | `SIGINT`, `SIGTERM`, `SIGQUIT`, `SIGHUP`, `SIGUSR1`, `SIGUSR2`, `SIGPIPE` blocked on worker threads (handled only by the main thread) |
 
@@ -164,7 +165,7 @@ bootstrap():
 └─ Await every ready_rx — returns only when every worker's runtime is up.
 ```
 
-Each worker has two roles in its single monoio runtime:
+Each worker has two roles in its single compio runtime:
 
 1. A **detached drainer task** that loops over the worker's `task_rx`,
    receiving `SpawnFn = Box<dyn FnOnce() + Send + 'static>` closures and
@@ -172,8 +173,8 @@ Each worker has two roles in its single monoio runtime:
    on its own future, so individual dispatches become independent tasks on
    that worker's runtime.
 2. The **top-level future** that waits on `shutdown_rx`. This is what keeps
-   `try_block_on` from returning; closing `shutdown_rx` is the cue to tear
-   down the worker.
+   `try_block_on` from returning; receiving a shutdown signal (or channel
+   closure) is the cue to tear down the worker.
 
 The task channel is `async_channel::unbounded`. Bounded mailboxes live one
 level up (per subsystem); the dispatcher's job is just "run this closure on
@@ -202,8 +203,9 @@ Two things to note:
 
 - The closure `f` is `Send + 'static` but the **future it returns** is only
   `'static`. That means `f` runs on the worker thread, constructs the
-  non-`Send` future there (monoio's tasks are not `Send`), and hands it to
-  `spawn_detached`.
+  future there, and hands it to `spawn_detached`. The future itself never
+  crosses a thread boundary, so it does not need to be `Send` — compio's
+  per-worker runtime is single-threaded and its tasks are spawned locally.
 - `dispatch_at_shard` itself does not await the future's completion. It only
   awaits enqueueing the closure on the worker's drainer task. Subsystems that
   need completion semantics layer their own reply channels on top.
@@ -551,8 +553,11 @@ Rationale:
 - `async_channel` is MPMC, but each mailbox has exactly one consumer (its
   shard actor). The multi-sender side is what every caller uses.
 - `dispatch_at_shard` ensures the shard actor is spawned on the correct
-  worker; monoio's tasks are `!Send`, which statically prevents the actor
-  from being moved off its home thread.
+  worker. Its type signature — `F: FnOnce() -> Fut + Send + 'static` with
+  `Fut: Future + 'static` (no `Send` bound on the future) — means the
+  closure is shipped to the worker, but the future it returns is
+  constructed and spawned there. The actor's state never crosses a thread
+  boundary.
 
 ## Constants
 
@@ -575,7 +580,7 @@ independently if traffic patterns diverge.
 | `async_channel` | MPMC channels for mailboxes, reply channels, task channels, shutdown signals |
 | `core_affinity` | Best-effort CPU-core pinning for worker threads |
 | `libc` | `pthread_sigmask` + signal constants to block signals on worker threads |
-| `monoio` (via `narwhal_common::runtime`) | io_uring async runtime per worker |
+| `compio` | io_uring async runtime per worker (accessed via `narwhal_common::runtime`) |
 | `std::hash::DefaultHasher` | Shard-key hashing (SipHash-1-3 today) |
 
 ## Testing
@@ -595,8 +600,8 @@ independently if traffic patterns diverge.
 
 | File | Purpose |
 |------|---------|
-| `crates/common/src/core_dispatcher.rs` | `CoreDispatcher` — thread pool + monoio runtimes |
-| `crates/common/src/runtime.rs` | `try_block_on`, `spawn_detached` — monoio runtime shims |
+| `crates/common/src/core_dispatcher.rs` | `CoreDispatcher` — thread pool + compio runtimes |
+| `crates/common/src/runtime.rs` | `try_block_on`, `spawn_detached` — compio runtime shims |
 | `crates/server/src/c2s/router.rs` | `Router` + `RouterShard` (sharded by username) |
 | `crates/server/src/channel/manager.rs` | `ChannelManager` + `ChannelShard` (sharded by channel) |
 | `crates/server/src/channel/membership.rs` | `Membership` + `MembershipShard` (sharded by username) |
