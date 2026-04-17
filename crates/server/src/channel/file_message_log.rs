@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use std::cell::UnsafeCell;
+use std::cell::RefCell;
 use std::fs as std_fs; // only for read_dir (no compio equivalent)
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -172,14 +172,8 @@ impl std::fmt::Debug for SegmentInfo {
 
 /// A file-based message log implementation using segmented append-only log files
 /// with per-segment sparse index files.
-///
-/// # Safety
-///
-/// Interior mutability is provided via `UnsafeCell`. This is safe because the
-/// shard actor model guarantees that only one task at a time accesses a given
-/// `FileMessageLog` instance (single-threaded, `!Send`).
 pub struct FileMessageLog {
-  inner: UnsafeCell<Inner>,
+  inner: RefCell<Inner>,
 }
 
 struct Inner {
@@ -240,19 +234,7 @@ impl FileMessageLog {
       reader: EntryReader::new(max_payload_size),
     };
     inner.recover().await;
-    FileMessageLog { inner: UnsafeCell::new(inner) }
-  }
-
-  /// Get a mutable reference to the inner state.
-  ///
-  /// # Safety
-  ///
-  /// The caller must ensure no other references to `Inner` exist.
-  /// This is guaranteed by the single-threaded shard actor model.
-  #[inline]
-  #[allow(clippy::mut_from_ref)]
-  fn inner(&self) -> &mut Inner {
-    unsafe { &mut *self.inner.get() }
+    FileMessageLog { inner: RefCell::new(inner) }
   }
 }
 
@@ -706,10 +688,13 @@ impl Inner {
   }
 }
 
+// The shard actor model guarantees single-threaded, non-reentrant access —
+// holding a RefCell borrow across .await is safe in this context.
+#[allow(clippy::await_holding_refcell_ref)]
 #[async_trait(?Send)]
 impl MessageLog for FileMessageLog {
   async fn append(&self, message: &Message, payload: &PoolBuffer, max_messages: u32) -> anyhow::Result<()> {
-    let inner = self.inner();
+    let inner = &mut *self.inner.borrow_mut();
 
     let params = match message {
       Message::Message(params) => params,
@@ -770,7 +755,7 @@ impl MessageLog for FileMessageLog {
   }
 
   async fn delete(&self) -> anyhow::Result<()> {
-    let inner = self.inner();
+    let inner = &mut *self.inner.borrow_mut();
 
     // Close active handles and drop the active index mmap.
     inner.active_log = None;
@@ -801,7 +786,7 @@ impl MessageLog for FileMessageLog {
   }
 
   async fn flush(&self) -> anyhow::Result<()> {
-    let inner = self.inner();
+    let inner = &mut *self.inner.borrow_mut();
 
     if let Some(ref log_file) = inner.active_log {
       log_file.sync_all().await?;
@@ -814,18 +799,18 @@ impl MessageLog for FileMessageLog {
   }
 
   fn first_seq(&self) -> u64 {
-    self.inner().cached_first_seq
+    self.inner.borrow().cached_first_seq
   }
 
   fn last_seq(&self) -> u64 {
-    self.inner().cached_last_seq
+    self.inner.borrow().cached_last_seq
   }
 
   async fn read(&self, from_seq: u64, limit: u32, visitor: &mut impl LogVisitor) -> anyhow::Result<u32>
   where
     Self: Sized,
   {
-    let this = self.inner();
+    let this = &mut *self.inner.borrow_mut();
 
     if limit == 0 || this.cached_last_seq == 0 || from_seq > this.cached_last_seq {
       return Ok(0);

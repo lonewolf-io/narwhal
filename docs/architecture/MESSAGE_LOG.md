@@ -2,7 +2,7 @@
 
 > **Status:** Implemented.
 > **Last updated:** 2026-04-16
-> **Related PRs:** [#221](https://github.com/narwhal-io/narwhal/pull/221) (HISTORY/CHAN_SEQ protocol)
+> **Related PRs:** [#221](https://github.com/narwhal-io/narwhal/pull/221) (HISTORY/CHAN_SEQ protocol), [#227](https://github.com/narwhal-io/narwhal/pull/227) (FileMessageLog implementation)
 
 ## Table of Contents
 
@@ -94,11 +94,11 @@ The directory is derived from a SHA-256 hash of the channel handler name:
 
 ```
 <base_dir>/<sha256(handler)>/
-  metadata.bin              ← channel metadata (FileChannelStore)
-  00000001.log              ← first segment (named by first seq)
-  00000001.idx              ← first segment's sparse index
-  00000257.log              ← second segment
-  00000257.idx              ← second segment's sparse index
+  metadata.bin                        ← channel metadata (FileChannelStore)
+  00000000000000000001.log            ← first segment (named by first seq, 20-digit zero-padded)
+  00000000000000000001.idx            ← first segment's sparse index
+  00000000000000000257.log            ← second segment
+  00000000000000000257.idx            ← second segment's sparse index
   ...
 ```
 
@@ -113,7 +113,7 @@ segment exceeds the size threshold.
 | Property         | Value              |
 |------------------|--------------------|
 | Max size         | 128 MiB            |
-| Naming           | First seq, zero-padded (e.g., `00000001.log`) |
+| Naming           | First seq, 20-digit zero-padded (e.g., `00000000000000000001.log`) |
 | Roll trigger     | Checked **after** each append |
 | Overshoot        | Up to one entry beyond 128 MiB (bounded by `max_payload_size`) |
 
@@ -173,8 +173,9 @@ memory-mapped files (`mmap`) for efficient access.
 **12 bytes per index entry.**
 
 The first seq of a segment is derived from its filename. The last seq of a
-sealed segment is derived from the next segment's filename minus one (or from
-in-memory state for the active segment).
+sealed segment is determined by scanning the `.log` file with CRC validation
+(populating `SegmentInfo.last_seq`). The active segment's last seq is tracked
+in-memory and updated on each append.
 
 #### Memory-Mapped Index Management (Kafka-style)
 
@@ -350,8 +351,9 @@ append(message, payload, max_messages)
 │
 ├─ 1. Serialize entry: seq | timestamp | from_len | payload_len | from | payload | crc32
 ├─ 2. write_all_at(entry, seg.file_size) via io_uring (compio positioned write)
-├─ 3. Update in-memory state (last_seq, segment byte count)
-├─ 4. If 4096+ bytes written since last index entry → write index entry into .idx mmap
+├─ 3. If 4096+ bytes written since last index entry → write index entry into .idx mmap
+│     (checked before updating bytes_since_index so the threshold reflects pre-write state)
+├─ 4. Update in-memory state (bytes_since_index, last_seq, segment byte count)
 ├─ 5. If segment exceeds 128 MiB → roll to new segment (see Segment Roll)
 └─ 6. If (last_seq - first_seq + 1) > max_messages → evict oldest segment(s)
 ```
@@ -400,8 +402,8 @@ After write completes:
 To read from `from_seq`:
 
 ```
-1. Find the segment whose first_seq <= from_seq
-   (scan in-memory segment list or filenames)
+1. Binary search the in-memory segment list for the last segment
+   whose first_seq <= from_seq
 
 2. Binary search the segment's .idx for the largest
    relative_seq <= (from_seq - segment_base_seq)
@@ -436,7 +438,7 @@ struct EntryReader {
 |-------------|-------|
 | Header buffer | 22 bytes (fixed) |
 | Body buffer | `NID_MAX_LENGTH` (510) + `max_payload_size` + 4 bytes |
-| Lifetime    | Created per `read()` call, reused across all entries in that call |
+| Lifetime    | Created once at construction, reused across all operations (reads, recovery, index rebuilds) |
 | Guarantee   | Always fits any valid entry's body (from + payload + CRC) |
 
 `NID_MAX_LENGTH` (510 bytes) is derived from the protocol's maximum NID size:
@@ -509,14 +511,20 @@ start of recovery and reused across all segments to avoid per-segment allocation
    (std::fs::read_dir — no compio equivalent)
 
 2. For each sealed segment (all except the last):
-   ├─ .idx exists and valid? → memory-map read-only (Mmap)
-   └─ .idx missing/corrupt?  → rebuild by scanning .log with EntryReader,
-   │                            write index via write_all_at, then mmap read-only
+   ├─ Scan .log with EntryReader (CRC validation) to determine last_seq
+   │   Segments with zero valid entries are deleted.
+   ├─ .idx exists? → memory-map read-only (Mmap)
+   └─ .idx missing? → rebuild by scanning .log with EntryReader,
+   │                   write index via write_all_at, then mmap read-only
 
 3. For the active (last) segment:
    ├─ Scan forward with EntryReader, validating CRC32 per entry
    ├─ Truncate at the first invalid/partial entry (file.set_len().await)
    ├─ Rebuild .idx from valid entries (reusing index buffer)
+   ├─ Compute bytes_since_index: read the last index entry to find its offset,
+   │   scan forward from there to count bytes written after it, so the index
+   │   interval resumes correctly on the next append
+   ├─ Open .log for writes (positioned I/O at seg.file_size)
    ├─ Extend .idx to pre-allocated capacity
    └─ Memory-map read-write (MmapMut), set write_pos to actual index size
 
@@ -611,6 +619,9 @@ no concurrent read/write access to a channel's message log.
 
 - No locks, no atomics.
 - `Rc<MessageLog>` (not `Arc`) — consistent with the existing `Channel` struct.
+- Interior mutability via `RefCell` — provides runtime borrow checking that
+  catches violations in debug builds. The `MessageLog` trait exposes `&self`
+  methods; `FileMessageLog` uses `RefCell<Inner>` to mutate internal state.
 - `read()` and `append()` are never called concurrently for the same channel.
 
 ## Testing
