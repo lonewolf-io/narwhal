@@ -120,6 +120,20 @@ impl MessageLogMetrics {
   }
 }
 
+/// RAII guard that observes elapsed time on a `Histogram` when dropped.
+/// Ensures the histogram is updated on both `Ok` and `Err` paths without
+/// requiring every early return to record the observation explicitly.
+struct ObserveOnDrop {
+  histogram: Histogram,
+  start: Instant,
+}
+
+impl Drop for ObserveOnDrop {
+  fn drop(&mut self) {
+    self.histogram.observe(self.start.elapsed().as_secs_f64());
+  }
+}
+
 /// Reusable, zero-allocation entry reader for the message log.
 ///
 /// Pre-allocates header and body buffers once at construction.  Buffers are
@@ -702,8 +716,6 @@ impl Inner {
   }
 
   async fn roll_segment(&mut self, next_seq: u64) -> anyhow::Result<()> {
-    self.metrics.segments_rolled.inc();
-
     // Close the log file handle.
     self.active_log = None;
 
@@ -726,7 +738,9 @@ impl Inner {
     }
 
     // Create new segment.
-    self.create_segment(next_seq).await
+    self.create_segment(next_seq).await?;
+    self.metrics.segments_rolled.inc();
+    Ok(())
   }
 
   /// Evict oldest segments whose last_seq is entirely outside the retention window.
@@ -796,7 +810,7 @@ impl Inner {
 impl MessageLog for FileMessageLog {
   async fn append(&self, message: &Message, payload: &PoolBuffer, max_messages: u32) -> anyhow::Result<()> {
     let inner = &mut *self.inner.borrow_mut();
-    let start = Instant::now();
+    let _observe = ObserveOnDrop { histogram: inner.metrics.append_duration_seconds.clone(), start: Instant::now() };
 
     let params = match message {
       Message::Message(params) => params,
@@ -853,7 +867,6 @@ impl MessageLog for FileMessageLog {
     // Evict old segments if needed.
     inner.evict_segments(max_messages).await;
 
-    inner.metrics.append_duration_seconds.observe(start.elapsed().as_secs_f64());
     Ok(())
   }
 
