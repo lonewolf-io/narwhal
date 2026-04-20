@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::channel::ChannelManager;
-use crate::channel::file_message_log::FileMessageLogFactory;
+use crate::channel::file_message_log::{FileMessageLogFactory, MessageLogMetrics};
 use crate::channel::file_store::FileChannelStore;
 use crate::notifier::Notifier;
 use crate::router::GlobalRouter;
@@ -116,10 +116,12 @@ async fn run_server(
   let notifier = Notifier::new(global_router.clone(), modulator_service.modulator.clone());
 
   let channel_reg = guard.sub_registry_with_prefix("narwhal");
+  let message_log_metrics = MessageLogMetrics::register(channel_reg);
 
   let data_dir: PathBuf = c2s_config.storage.data_dir.clone().into();
   let channel_store = FileChannelStore::new(data_dir.clone()).await?;
-  let message_log_factory = FileMessageLogFactory::new(data_dir, c2s_config.limits.max_payload_size);
+  let message_log_factory =
+    FileMessageLogFactory::new(data_dir, c2s_config.limits.max_payload_size, message_log_metrics);
 
   let mut channel_mng = ChannelManager::new(
     global_router.clone(),
