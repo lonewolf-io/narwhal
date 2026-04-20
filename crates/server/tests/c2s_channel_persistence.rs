@@ -9,7 +9,7 @@ use narwhal_protocol::{
   ChannelSeqParameters, ErrorParameters, ErrorReason, HistoryParameters, ListChannelsParameters, Message,
 };
 use narwhal_server::channel::NoopMessageLogFactory;
-use narwhal_server::channel::file_message_log::FileMessageLogFactory;
+use narwhal_server::channel::file_message_log::{FileMessageLogFactory, MessageLogMetrics};
 use narwhal_server::channel::file_store::FileChannelStore;
 use narwhal_test_util::{C2sSuite, TestModulator, default_c2s_config, default_s2m_config};
 use narwhal_util::string_atom::StringAtom;
@@ -192,7 +192,7 @@ async fn test_c2s_history_retrieves_persisted_messages() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -276,7 +276,7 @@ async fn test_c2s_chan_seq_returns_sequence_range() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -326,7 +326,7 @@ async fn test_c2s_history_partial_range() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -399,7 +399,7 @@ async fn test_c2s_history_survives_restart() -> anyhow::Result<()> {
   {
     let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
     let store = FileChannelStore::new(data_dir.clone()).await?;
-    let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+    let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
     let mut suite =
       C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
@@ -422,7 +422,7 @@ async fn test_c2s_history_survives_restart() -> anyhow::Result<()> {
   {
     let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
     let store = FileChannelStore::new(data_dir.clone()).await?;
-    let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+    let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
     let mut suite =
       C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
@@ -482,7 +482,7 @@ async fn test_c2s_history_empty_channel() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -529,7 +529,7 @@ async fn test_c2s_chan_seq_empty_channel() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -571,7 +571,7 @@ async fn test_c2s_chan_seq_after_eviction() -> anyhow::Result<()> {
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
   // Use tiny segments (256 bytes) so eviction kicks in with small messages.
-  let mlf = FileMessageLogFactory::with_segment_max(data_dir.clone(), 4096, 256);
+  let mlf = FileMessageLogFactory::with_segment_max(data_dir.clone(), 4096, 256, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -620,7 +620,7 @@ async fn test_c2s_history_after_eviction() -> anyhow::Result<()> {
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
   // Use tiny segments (256 bytes) so eviction kicks in with small messages.
-  let mlf = FileMessageLogFactory::with_segment_max(data_dir.clone(), 4096, 256);
+  let mlf = FileMessageLogFactory::with_segment_max(data_dir.clone(), 4096, 256, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -691,7 +691,7 @@ async fn test_c2s_history_cross_user() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -784,7 +784,7 @@ async fn test_c2s_history_survives_restart_after_eviction() -> anyhow::Result<()
   {
     let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
     let store = FileChannelStore::new(data_dir.clone()).await?;
-    let mlf = FileMessageLogFactory::with_segment_max(data_dir.clone(), 4096, 256);
+    let mlf = FileMessageLogFactory::with_segment_max(data_dir.clone(), 4096, 256, MessageLogMetrics::noop());
 
     let mut suite =
       C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
@@ -807,7 +807,7 @@ async fn test_c2s_history_survives_restart_after_eviction() -> anyhow::Result<()
   {
     let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
     let store = FileChannelStore::new(data_dir.clone()).await?;
-    let mlf = FileMessageLogFactory::with_segment_max(data_dir.clone(), 4096, 256);
+    let mlf = FileMessageLogFactory::with_segment_max(data_dir.clone(), 4096, 256, MessageLogMetrics::noop());
 
     let mut suite =
       C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
@@ -893,7 +893,7 @@ async fn test_c2s_history_from_seq_beyond_last() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -946,7 +946,7 @@ async fn test_c2s_history_independent_channels() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -1055,7 +1055,7 @@ async fn test_c2s_history_and_chan_seq_on_non_persistent_channel() -> anyhow::Re
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -1116,7 +1116,7 @@ async fn test_c2s_toggle_persistence_off_then_on() -> anyhow::Result<()> {
 
   let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
   let store = FileChannelStore::new(data_dir.clone()).await?;
-  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
   let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
   suite.setup().await?;
@@ -1215,7 +1215,7 @@ async fn test_c2s_chan_seq_survives_restart() -> anyhow::Result<()> {
   {
     let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
     let store = FileChannelStore::new(data_dir.clone()).await?;
-    let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+    let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
     let mut suite =
       C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
@@ -1238,7 +1238,7 @@ async fn test_c2s_chan_seq_survives_restart() -> anyhow::Result<()> {
   {
     let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
     let store = FileChannelStore::new(data_dir.clone()).await?;
-    let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096);
+    let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
 
     let mut suite =
       C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;

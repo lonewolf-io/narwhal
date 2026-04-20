@@ -73,8 +73,14 @@ struct ChannelManagerMetrics {
   store_saves: Family<ResultLabel, Counter>,
   store_save_duration_seconds: Histogram,
   store_deletes: Family<ResultLabel, Counter>,
+  store_loads: Family<ResultLabel, Counter>,
+  store_load_duration_seconds: Histogram,
   message_log_flushes: Family<ResultLabel, Counter>,
   message_log_flush_duration_seconds: Histogram,
+  message_log_reads: Family<ResultLabel, Counter>,
+  message_log_read_duration_seconds: Histogram,
+  message_log_entries_returned: Histogram,
+  message_log_deletes: Family<ResultLabel, Counter>,
 }
 
 impl std::fmt::Debug for ChannelManagerMetrics {
@@ -105,6 +111,15 @@ impl ChannelManagerMetrics {
     );
     let store_deletes = Family::default();
     registry.register("store_deletes", "Channel store delete operations", store_deletes.clone());
+    let store_loads = Family::default();
+    registry.register("store_loads", "Channel store load operations", store_loads.clone());
+    let store_load_duration_seconds =
+      Histogram::new(prometheus_client::metrics::histogram::exponential_buckets(0.0001, 2.0, 16));
+    registry.register(
+      "store_load_duration_seconds",
+      "Duration of channel store load operations in seconds",
+      store_load_duration_seconds.clone(),
+    );
     let message_log_flushes = Family::default();
     registry.register("message_log_flushes", "Message log flush operations", message_log_flushes.clone());
     let message_log_flush_duration_seconds =
@@ -114,6 +129,24 @@ impl ChannelManagerMetrics {
       "Duration of message log flush operations in seconds",
       message_log_flush_duration_seconds.clone(),
     );
+    let message_log_reads = Family::default();
+    registry.register("message_log_reads", "Message log read operations", message_log_reads.clone());
+    let message_log_read_duration_seconds =
+      Histogram::new(prometheus_client::metrics::histogram::exponential_buckets(0.0001, 2.0, 16));
+    registry.register(
+      "message_log_read_duration_seconds",
+      "Duration of message log read operations in seconds",
+      message_log_read_duration_seconds.clone(),
+    );
+    let message_log_entries_returned =
+      Histogram::new(prometheus_client::metrics::histogram::exponential_buckets(1.0, 2.0, 11));
+    registry.register(
+      "message_log_entries_returned",
+      "Number of entries returned by a message log read",
+      message_log_entries_returned.clone(),
+    );
+    let message_log_deletes = Family::default();
+    registry.register("message_log_deletes", "Message log delete operations", message_log_deletes.clone());
 
     Self {
       channels_active,
@@ -123,8 +156,14 @@ impl ChannelManagerMetrics {
       store_saves,
       store_save_duration_seconds,
       store_deletes,
+      store_loads,
+      store_load_duration_seconds,
       message_log_flushes,
       message_log_flush_duration_seconds,
+      message_log_reads,
+      message_log_read_duration_seconds,
+      message_log_entries_returned,
+      message_log_deletes,
     }
   }
 
@@ -135,6 +174,39 @@ impl ChannelManagerMetrics {
     match result {
       Ok(()) => self.message_log_flushes.get_or_create(&SUCCESS).inc(),
       Err(_) => self.message_log_flushes.get_or_create(&FAILURE).inc(),
+    };
+  }
+
+  /// Records the outcome of a message log read: observes duration, the number of entries
+  /// returned on success, and increments the success/failure counter.
+  fn record_read(&self, start: Instant, result: &anyhow::Result<u32>) {
+    self.message_log_read_duration_seconds.observe(start.elapsed().as_secs_f64());
+    match result {
+      Ok(count) => {
+        self.message_log_entries_returned.observe(*count as f64);
+        self.message_log_reads.get_or_create(&SUCCESS).inc();
+      },
+      Err(_) => {
+        self.message_log_reads.get_or_create(&FAILURE).inc();
+      },
+    };
+  }
+
+  /// Records the outcome of a message log delete.
+  fn record_message_log_delete(&self, result: &anyhow::Result<()>) {
+    match result {
+      Ok(()) => self.message_log_deletes.get_or_create(&SUCCESS).inc(),
+      Err(_) => self.message_log_deletes.get_or_create(&FAILURE).inc(),
+    };
+  }
+
+  /// Records the outcome of a channel store load: observes duration and increments
+  /// the success/failure counter.
+  fn record_load<T>(&self, start: Instant, result: &anyhow::Result<T>) {
+    self.store_load_duration_seconds.observe(start.elapsed().as_secs_f64());
+    match result {
+      Ok(_) => self.store_loads.get_or_create(&SUCCESS).inc(),
+      Err(_) => self.store_loads.get_or_create(&FAILURE).inc(),
     };
   }
 }
@@ -468,7 +540,10 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
 
   async fn restore(&mut self, hashes: Vec<StringAtom>) {
     for hash in &hashes {
-      let persisted = match self.store.load_channel(hash).await {
+      let start = Instant::now();
+      let result = self.store.load_channel(hash).await;
+      self.metrics.record_load(start, &result);
+      let persisted = match result {
         Ok(p) => p,
         Err(e) => {
           warn!(hash = %hash, error = %e, "skipping channel restore: failed to load persisted channel");
@@ -1343,7 +1418,10 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       pool: &self.history_pool,
     };
 
-    let count = channel.message_log.read(from_seq, limit, &mut visitor).await?;
+    let start = Instant::now();
+    let result = channel.message_log.read(from_seq, limit, &mut visitor).await;
+    self.metrics.record_read(start, &result);
+    let count = result?;
 
     transmitter.send_message(Message::HistoryAck(HistoryAckParameters {
       id: correlation_id,
@@ -1396,10 +1474,12 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
   /// Errors are logged but never propagated. Callers must not depend on storage cleanup
   /// succeeding for in-memory consistency.
   async fn delete_persistent_storage(&mut self, handler: &StringAtom) {
-    if let Some(channel) = self.channels.get_mut(handler)
-      && let Err(e) = channel.message_log.delete().await
-    {
-      warn!(channel = %handler, error = %e, "failed to delete persisted message log");
+    if let Some(channel) = self.channels.get_mut(handler) {
+      let result = channel.message_log.delete().await;
+      self.metrics.record_message_log_delete(&result);
+      if let Err(e) = result {
+        warn!(channel = %handler, error = %e, "failed to delete persisted message log");
+      }
     }
     if let Some(hash) = self.channels.get(handler).and_then(|c| c.store_hash.clone()) {
       match self.store.delete_channel(&hash).await {
@@ -1614,12 +1694,21 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
     // Load persisted channel hashes and determine shard assignment.
     // Each hash's channel is loaded to extract the handler for shard routing,
     // then the shard re-loads the full metadata on its own thread during restore.
-    let channel_hashes: Arc<[StringAtom]> =
-      if restore_channels { self.store.load_channel_hashes().await? } else { Arc::from([]) };
+    let channel_hashes: Arc<[StringAtom]> = if restore_channels {
+      let start = Instant::now();
+      let result = self.store.load_channel_hashes().await;
+      self.metrics.record_load(start, &result);
+      result?
+    } else {
+      Arc::from([])
+    };
 
     let mut shard_hashes: Vec<Vec<StringAtom>> = vec![Vec::new(); shard_count];
     for hash in channel_hashes.iter() {
-      match self.store.load_channel(hash).await {
+      let start = Instant::now();
+      let result = self.store.load_channel(hash).await;
+      self.metrics.record_load(start, &result);
+      match result {
         Ok(persisted) => {
           let shard_id = shard_for(&persisted.handler, shard_count);
           shard_hashes[shard_id].push(hash.clone());

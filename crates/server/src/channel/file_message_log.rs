@@ -4,6 +4,7 @@ use std::cell::RefCell;
 use std::fs as std_fs; // only for read_dir (no compio equivalent)
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 
 use async_trait::async_trait;
 use compio::BufResult;
@@ -12,6 +13,9 @@ use memmap2::{Mmap, MmapMut};
 use narwhal_protocol::{Message, NID_MAX_LENGTH};
 use narwhal_util::pool::PoolBuffer;
 use narwhal_util::string_atom::StringAtom;
+use prometheus_client::metrics::counter::Counter;
+use prometheus_client::metrics::histogram::Histogram;
+use prometheus_client::registry::Registry;
 
 use super::file_store::channel_hash;
 use super::store::{LogEntry, LogVisitor, MessageLog, MessageLogFactory};
@@ -38,6 +42,77 @@ const SEGMENT_EXT: &str = "log";
 /// Index file extension.
 const INDEX_EXT: &str = "idx";
 
+/// Metric handles for `FileMessageLog` operations.
+///
+/// Cloneable — each `FileMessageLog` instance holds a clone, so a single set of
+/// handles is shared across all logs created by a factory.
+#[derive(Clone)]
+pub struct MessageLogMetrics {
+  recovery_duration_seconds: Histogram,
+  append_duration_seconds: Histogram,
+  segments_rolled: Counter,
+  segments_evicted: Counter,
+  evicted_bytes: Counter,
+  crc_failures: Counter,
+}
+
+impl std::fmt::Debug for MessageLogMetrics {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    f.debug_struct("MessageLogMetrics").finish_non_exhaustive()
+  }
+}
+
+impl MessageLogMetrics {
+  /// Registers the metric handles on `registry` and returns them.
+  pub fn register(registry: &mut Registry) -> Self {
+    let recovery_duration_seconds =
+      Histogram::new(prometheus_client::metrics::histogram::exponential_buckets(0.001, 2.0, 16));
+    registry.register(
+      "message_log_recovery_duration_seconds",
+      "Duration of message log recovery at startup in seconds",
+      recovery_duration_seconds.clone(),
+    );
+    let append_duration_seconds =
+      Histogram::new(prometheus_client::metrics::histogram::exponential_buckets(0.0001, 2.0, 16));
+    registry.register(
+      "message_log_append_duration_seconds",
+      "Duration of message log append operations in seconds",
+      append_duration_seconds.clone(),
+    );
+    let segments_rolled = Counter::default();
+    registry.register("message_log_segments_rolled", "Message log segment rolls", segments_rolled.clone());
+    let segments_evicted = Counter::default();
+    registry.register("message_log_segments_evicted", "Message log segments evicted", segments_evicted.clone());
+    let evicted_bytes = Counter::default();
+    registry.register("message_log_evicted_bytes", "Bytes reclaimed by message log eviction", evicted_bytes.clone());
+    let crc_failures = Counter::default();
+    registry.register(
+      "message_log_crc_failures",
+      "Message log entries rejected due to CRC mismatch",
+      crc_failures.clone(),
+    );
+
+    Self { recovery_duration_seconds, append_duration_seconds, segments_rolled, segments_evicted, evicted_bytes, crc_failures }
+  }
+
+  /// Returns an instance with unregistered handles — useful for tests that do
+  /// not care about observing metric values.
+  pub fn noop() -> Self {
+    Self {
+      recovery_duration_seconds: Histogram::new(
+        prometheus_client::metrics::histogram::exponential_buckets(0.001, 2.0, 16),
+      ),
+      append_duration_seconds: Histogram::new(
+        prometheus_client::metrics::histogram::exponential_buckets(0.0001, 2.0, 16),
+      ),
+      segments_rolled: Counter::default(),
+      segments_evicted: Counter::default(),
+      evicted_bytes: Counter::default(),
+      crc_failures: Counter::default(),
+    }
+  }
+}
+
 /// Reusable, zero-allocation entry reader for the message log.
 ///
 /// Pre-allocates header and body buffers once at construction.  Buffers are
@@ -55,10 +130,13 @@ struct EntryReader {
   from_len: usize,
   payload_len: usize,
   entry_size: u64,
+
+  /// Counter incremented whenever `read_at` detects a CRC mismatch.
+  crc_failures: Counter,
 }
 
 impl EntryReader {
-  fn new(max_payload_size: u32) -> Self {
+  fn new(max_payload_size: u32, crc_failures: Counter) -> Self {
     Self {
       header: Vec::with_capacity(ENTRY_HEADER_SIZE),
       body: Vec::with_capacity(NID_MAX_LENGTH + max_payload_size as usize + CRC_SIZE),
@@ -67,6 +145,7 @@ impl EntryReader {
       from_len: 0,
       payload_len: 0,
       entry_size: 0,
+      crc_failures,
     }
   }
 
@@ -129,6 +208,7 @@ impl EntryReader {
     let computed_crc = hasher.finalize();
 
     if stored_crc != computed_crc {
+      self.crc_failures.inc();
       return false;
     }
 
@@ -209,17 +289,25 @@ struct Inner {
 
   /// Pre-allocated entry reader for the read path and recovery.
   reader: EntryReader,
+
+  /// Metric handles for operations performed by the log.
+  metrics: MessageLogMetrics,
 }
 
 // === impl FileMessageLog ===
 
 impl FileMessageLog {
   /// Create a new (or recover an existing) message log rooted at `channel_dir`.
-  async fn open(channel_dir: PathBuf, max_payload_size: u32) -> Self {
-    Self::open_with_segment_max(channel_dir, max_payload_size, SEGMENT_MAX_BYTES).await
+  async fn open(channel_dir: PathBuf, max_payload_size: u32, metrics: MessageLogMetrics) -> Self {
+    Self::open_with_segment_max(channel_dir, max_payload_size, SEGMENT_MAX_BYTES, metrics).await
   }
 
-  async fn open_with_segment_max(channel_dir: PathBuf, max_payload_size: u32, segment_max_bytes: u64) -> Self {
+  async fn open_with_segment_max(
+    channel_dir: PathBuf,
+    max_payload_size: u32,
+    segment_max_bytes: u64,
+    metrics: MessageLogMetrics,
+  ) -> Self {
     let mut inner = Inner {
       channel_dir,
       segment_max_bytes,
@@ -231,9 +319,12 @@ impl FileMessageLog {
       cached_first_seq: 0,
       cached_last_seq: 0,
       write_buf: Vec::with_capacity(ENTRY_HEADER_SIZE + NID_MAX_LENGTH + max_payload_size as usize + CRC_SIZE),
-      reader: EntryReader::new(max_payload_size),
+      reader: EntryReader::new(max_payload_size, metrics.crc_failures.clone()),
+      metrics,
     };
+    let start = Instant::now();
     inner.recover().await;
+    inner.metrics.recovery_duration_seconds.observe(start.elapsed().as_secs_f64());
     FileMessageLog { inner: RefCell::new(inner) }
   }
 }
@@ -604,6 +695,8 @@ impl Inner {
   }
 
   async fn roll_segment(&mut self, next_seq: u64) -> anyhow::Result<()> {
+    self.metrics.segments_rolled.inc();
+
     // Close the log file handle.
     self.active_log = None;
 
@@ -639,11 +732,12 @@ impl Inner {
 
     while self.segments.len() > 1 {
       if self.segments[0].last_seq < retain_from {
-        let first_seq = self.segments[0].first_seq;
         // Drop the segment (and its mmap) before deleting the underlying files.
-        self.segments.remove(0);
-        let _ = compio::fs::remove_file(self.segment_log_path(first_seq)).await;
-        let _ = compio::fs::remove_file(self.segment_idx_path(first_seq)).await;
+        let removed = self.segments.remove(0);
+        self.metrics.segments_evicted.inc();
+        self.metrics.evicted_bytes.inc_by(removed.file_size);
+        let _ = compio::fs::remove_file(self.segment_log_path(removed.first_seq)).await;
+        let _ = compio::fs::remove_file(self.segment_idx_path(removed.first_seq)).await;
       } else {
         break;
       }
@@ -695,6 +789,7 @@ impl Inner {
 impl MessageLog for FileMessageLog {
   async fn append(&self, message: &Message, payload: &PoolBuffer, max_messages: u32) -> anyhow::Result<()> {
     let inner = &mut *self.inner.borrow_mut();
+    let start = Instant::now();
 
     let params = match message {
       Message::Message(params) => params,
@@ -751,6 +846,7 @@ impl MessageLog for FileMessageLog {
     // Evict old segments if needed.
     inner.evict_segments(max_messages).await;
 
+    inner.metrics.append_duration_seconds.observe(start.elapsed().as_secs_f64());
     Ok(())
   }
 
@@ -893,19 +989,25 @@ pub struct FileMessageLogFactory {
   data_dir: Arc<PathBuf>,
   max_payload_size: u32,
   segment_max_bytes: Option<u64>,
+  metrics: MessageLogMetrics,
 }
 
 // === impl FileMessageLogFactory ===
 
 impl FileMessageLogFactory {
-  pub fn new(data_dir: PathBuf, max_payload_size: u32) -> Self {
-    Self { data_dir: Arc::new(data_dir), max_payload_size, segment_max_bytes: None }
+  pub fn new(data_dir: PathBuf, max_payload_size: u32, metrics: MessageLogMetrics) -> Self {
+    Self { data_dir: Arc::new(data_dir), max_payload_size, segment_max_bytes: None, metrics }
   }
 
   /// Creates a factory that produces logs with a custom segment size threshold.
   /// Useful for testing eviction without needing to fill 128 MiB segments.
-  pub fn with_segment_max(data_dir: PathBuf, max_payload_size: u32, segment_max_bytes: u64) -> Self {
-    Self { data_dir: Arc::new(data_dir), max_payload_size, segment_max_bytes: Some(segment_max_bytes) }
+  pub fn with_segment_max(
+    data_dir: PathBuf,
+    max_payload_size: u32,
+    segment_max_bytes: u64,
+    metrics: MessageLogMetrics,
+  ) -> Self {
+    Self { data_dir: Arc::new(data_dir), max_payload_size, segment_max_bytes: Some(segment_max_bytes), metrics }
   }
 }
 
@@ -917,8 +1019,10 @@ impl MessageLogFactory for FileMessageLogFactory {
     let hash = channel_hash(handler);
     let channel_dir = self.data_dir.join(hash.as_ref());
     match self.segment_max_bytes {
-      Some(max) => FileMessageLog::open_with_segment_max(channel_dir, self.max_payload_size, max).await,
-      None => FileMessageLog::open(channel_dir, self.max_payload_size).await,
+      Some(max) => {
+        FileMessageLog::open_with_segment_max(channel_dir, self.max_payload_size, max, self.metrics.clone()).await
+      },
+      None => FileMessageLog::open(channel_dir, self.max_payload_size, self.metrics.clone()).await,
     }
   }
 }
@@ -987,7 +1091,7 @@ mod tests {
 
   /// Helper: create a FileMessageLog in a temp directory.
   async fn create_log(dir: &std::path::Path) -> FileMessageLog {
-    let factory = FileMessageLogFactory::new(dir.to_path_buf(), TEST_MAX_PAYLOAD_SIZE);
+    let factory = FileMessageLogFactory::new(dir.to_path_buf(), TEST_MAX_PAYLOAD_SIZE, MessageLogMetrics::noop());
     factory.create(&StringAtom::from("test_channel")).await
   }
 
@@ -995,7 +1099,7 @@ mod tests {
   async fn create_log_with_segment_max(dir: &std::path::Path, segment_max_bytes: u64) -> FileMessageLog {
     let hash = channel_hash(&StringAtom::from("test_channel"));
     let channel_dir = dir.join(hash.as_ref());
-    FileMessageLog::open_with_segment_max(channel_dir, TEST_MAX_PAYLOAD_SIZE, segment_max_bytes).await
+    FileMessageLog::open_with_segment_max(channel_dir, TEST_MAX_PAYLOAD_SIZE, segment_max_bytes, MessageLogMetrics::noop()).await
   }
 
   /// Helper: append a single message with the given seq, from, and payload.
@@ -1530,7 +1634,7 @@ mod tests {
   #[compio::test]
   async fn test_factory_creates_independent_logs() {
     let tmp = tempfile::tempdir().unwrap();
-    let factory = FileMessageLogFactory::new(tmp.path().to_path_buf(), TEST_MAX_PAYLOAD_SIZE);
+    let factory = FileMessageLogFactory::new(tmp.path().to_path_buf(), TEST_MAX_PAYLOAD_SIZE, MessageLogMetrics::noop());
 
     let log_a = factory.create(&StringAtom::from("channel_a")).await;
     let log_b = factory.create(&StringAtom::from("channel_b")).await;
