@@ -1238,7 +1238,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-benchmark"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1263,7 +1263,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-client"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1290,7 +1290,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-common"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-modulator"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-broadcast",
@@ -1334,7 +1334,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-protocol"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "futures",
@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-protocol-macros"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-server"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-broadcast",
@@ -1397,7 +1397,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-test-util"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-broadcast",
@@ -1421,7 +1421,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-util"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "bytes",

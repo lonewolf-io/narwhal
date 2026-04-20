@@ -4,9 +4,9 @@
        alt="walrus"
        width="25%">
 
-[![CI](https://img.shields.io/github/actions/workflow/status/narwhal-io/narwhal/ci.yaml?branch=main)](https://github.com/narwhal-io/narwhal/actions)
-[![Releases](https://img.shields.io/github/v/release/narwhal-io/narwhal?include_prereleases)](https://github.com/narwhal-io/narwhal/releases)
-[![LICENSE](https://img.shields.io/github/license/narwhal-io/narwhal)](https://github.com/narwhal-io/narwhal/blob/master/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/lonewolf-io/narwhal/ci.yaml?branch=main)](https://github.com/lonewolf-io/narwhal/actions)
+[![Releases](https://img.shields.io/github/v/release/lonewolf-io/narwhal?include_prereleases)](https://github.com/lonewolf-io/narwhal/releases)
+[![LICENSE](https://img.shields.io/github/license/lonewolf-io/narwhal)](https://github.com/lonewolf-io/narwhal/blob/master/LICENSE)
 
 </div>
 
@@ -60,7 +60,7 @@ https://github.com/user-attachments/assets/bda491a0-a51b-4aaf-9ec8-3b3e7948d5ce
 #### Building from Source
 
 ```bash
-git clone https://github.com/narwhal-io/narwhal.git
+git clone https://github.com/lonewolf-io/narwhal.git
 cd narwhal
 cargo build --release
 ```
@@ -179,7 +179,7 @@ RUST_LOG=debug cargo run --bin narwhal
 
 ## Project Status
 
-**Current Version: 0.5.0 (Alpha)**
+**Current Version: 0.6.0 (Alpha)**
 
 Narwhal is in active development and currently in **alpha** stage. While the core functionality is working and tested, please note:
 
@@ -214,5 +214,5 @@ This project is licensed under the BSD-3-Clause License - see the [LICENSE](LICE
 
 ## Community
 
-- **Issues**: [GitHub Issues](https://github.com/narwhal-io/narwhal/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/narwhal-io/narwhal/discussions)
+- **Issues**: [GitHub Issues](https://github.com/lonewolf-io/narwhal/issues)
+- **Discussions**: [GitHub Discussions](https://github.com/lonewolf-io/narwhal/discussions)
