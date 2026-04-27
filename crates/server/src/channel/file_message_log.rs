@@ -731,13 +731,13 @@ impl Inner {
     // to its actual size, then remap as a read-only Mmap for the sealed segment.
     let write_pos = self.active_idx_write_pos;
     if let Some(ref idx_file) = self.active_idx_file {
-      let _ = idx_file.sync_all().await;
+      idx_file.sync_all().await?;
     }
     self.active_idx_mmap = None;
 
     if let Some(ref idx_file) = self.active_idx_file {
-      let _ = idx_file.set_len(write_pos as u64).await;
-      let _ = idx_file.sync_all().await;
+      idx_file.set_len(write_pos as u64).await?;
+      idx_file.sync_all().await?;
     }
     self.active_idx_file = None;
 
