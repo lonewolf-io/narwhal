@@ -545,9 +545,24 @@ start of recovery and reused across all segments to avoid per-segment allocation
 2. For each sealed segment (all except the last):
    ├─ Scan .log with EntryReader (CRC validation) to determine last_seq
    │   Segments with zero valid entries are deleted.
-   ├─ .idx exists? → memory-map read-only (Mmap)
-   └─ .idx missing? → rebuild by scanning .log with EntryReader,
-   │                   write index via write_all_at, then mmap read-only
+   ├─ .idx looks valid? → memory-map read-only (Mmap)
+   └─ .idx missing or visibly corrupt? → rebuild by scanning .log with
+   │                   EntryReader, write index via write_all_at, then
+   │                   mmap read-only
+
+   "Visibly corrupt" means any of: file size falls outside `(0, idx_capacity]`,
+   file size is not a multiple of INDEX_ENTRY_SIZE, the first entry is not
+   `(relative_seq=0, offset=0)` (entry-0 rule), `relative_seq` or `offset` is
+   not strictly monotonically increasing across consecutive entries, or the
+   last entry's offset is not strictly less than the .log file size. Subtle
+   corruption (e.g. a wrong middle-entry offset that lies inside the .log
+   while still preserving monotonicity) is not detected by these checks. A
+   bad but in-range offset can cause an indexed read to start at the wrong
+   position, where `EntryReader` rejects the malformed bytes via CRC32 and
+   the segment's read terminates early — valid later entries in that segment
+   are silently skipped for the affected read. CRC32 prevents returning
+   malformed entries, but completeness is not guaranteed; the recovery path
+   is to delete the `.idx` so it gets rebuilt on next startup.
 
 3. For the active (last) segment:
    ├─ Scan forward with EntryReader, validating CRC32 per entry
@@ -571,7 +586,7 @@ start of recovery and reused across all segments to avoid per-segment allocation
 **Guarantees:**
 - A crash mid-append loses at most the in-progress entry (CRC detects the partial write).
 - A crash during segment roll leaves at most an empty segment file, which is cleaned up.
-- Index corruption is always recoverable by scanning the log.
+- Visibly corrupt sealed indexes (per the checks in step 2) are rebuilt from the log on recovery. Subtle index corruption that passes those structural checks is not detected: a bad but in-range offset can cause an indexed read to start at the wrong position, where CRC32 validation prevents returning malformed entries but valid later entries in that segment may be silently skipped for the affected read. Recovering from this state requires deleting the `.idx` so it gets rebuilt on next startup.
 
 ## Integration
 

@@ -428,14 +428,14 @@ impl Inner {
         self.bytes_since_index =
           Self::compute_bytes_since_last_index(&log_path, &idx_path, valid_size, &mut self.reader).await;
       } else {
-        // Sealed segment: trust it, rebuild index if missing.
+        // Sealed segment: rebuild the index if missing or visibly corrupt.
         let last_seq = Self::scan_last_seq(&log_path, base_seq, &mut self.reader).await;
         if last_seq == 0 {
           let _ = compio::fs::remove_file(&log_path).await;
           let _ = compio::fs::remove_file(&idx_path).await;
           continue;
         }
-        if compio::fs::metadata(&idx_path).await.is_err() {
+        if !Self::looks_like_valid_index(&idx_path, file_size, self.idx_capacity()).await {
           Self::rebuild_index(&log_path, &idx_path, base_seq, &mut self.reader, &mut idx_buf).await;
         }
         let idx_mmap = Self::mmap_index(&idx_path).await;
@@ -477,6 +477,71 @@ impl Inner {
         }
       }
     }
+  }
+
+  /// Sanity-check a sealed segment's `.idx` file before mmapping it.
+  ///
+  /// The format is unprotected by a checksum, so a corrupted or truncated
+  /// `.idx` would be silently mapped and produce bogus offsets at read time
+  /// (worst case: empty reads from a valid `.log`). These cheap structural
+  /// checks catch the obvious cases; if any fails, the caller rebuilds the
+  /// index by scanning the log:
+  /// - file exists and its size fits in `(0, idx_capacity]` (oversized `.idx`
+  ///   files most often indicate corruption, but can also legitimately appear
+  ///   if `segment_max_bytes` or `INDEX_INTERVAL_BYTES` was reduced between
+  ///   runs — rebuilding from the log handles both cases, and bounding the
+  ///   size first also bounds the buffer we load below),
+  /// - the size is a multiple of `INDEX_ENTRY_SIZE`,
+  /// - the first entry is `(relative_seq=0, offset=0)` (entry-0 rule),
+  /// - both `relative_seq` and `offset` are strictly monotonically increasing
+  ///   across consecutive entries,
+  /// - the last entry's `offset` is strictly less than `log_file_size`.
+  ///
+  /// Returns `false` if the file is missing, malformed, or fails any check.
+  async fn looks_like_valid_index(idx_path: &Path, log_file_size: u64, idx_capacity: u64) -> bool {
+    let Ok(metadata) = compio::fs::metadata(idx_path).await else {
+      return false;
+    };
+    let size = metadata.len();
+    if size == 0 || size > idx_capacity || size % INDEX_ENTRY_SIZE as u64 != 0 {
+      return false;
+    }
+
+    // Size is bounded by idx_capacity above, so loading the whole file is
+    // safe and lets us walk all entries without per-entry syscalls.
+    let Ok(data) = compio::fs::read(idx_path).await else {
+      return false;
+    };
+    // Guard against a race or short read between metadata() and read(): bail
+    // before any subsequent slicing is allowed to assume validated bounds.
+    if data.len() as u64 != size {
+      return false;
+    }
+
+    // Entry-0 rule: the first index entry is always written by
+    // maybe_write_index_entry / rebuild_index as (relative_seq=0, offset=0).
+    let first_rel_seq = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let first_offset = u64::from_le_bytes(data[4..12].try_into().unwrap());
+    if first_rel_seq != 0 || first_offset != 0 {
+      return false;
+    }
+
+    let entry_count = data.len() / INDEX_ENTRY_SIZE;
+    let mut prev_rel_seq = first_rel_seq;
+    let mut prev_offset = first_offset;
+    for i in 1..entry_count {
+      let off = i * INDEX_ENTRY_SIZE;
+      let rel_seq = u32::from_le_bytes(data[off..off + 4].try_into().unwrap());
+      let offset = u64::from_le_bytes(data[off + 4..off + 12].try_into().unwrap());
+      if rel_seq <= prev_rel_seq || offset <= prev_offset {
+        return false;
+      }
+      prev_rel_seq = rel_seq;
+      prev_offset = offset;
+    }
+
+    // After the loop `prev_offset` is the last entry's offset.
+    prev_offset < log_file_size
   }
 
   /// Compute bytes written since the last index entry for the active segment.
@@ -1841,6 +1906,122 @@ mod tests {
       assert_eq!(visitor.entries[0].seq, 50);
       assert_eq!(visitor.entries[0].payload, b"msg_0050");
     }
+  }
+
+  #[compio::test]
+  async fn test_recovery_rebuilds_corrupt_sealed_index() {
+    // Spec ("Recovery / Guarantees") promises index corruption is recoverable
+    // by scanning the log. Without sanity-checking the .idx at load time, a
+    // corrupted-but-present sealed index would be silently mmapped and the
+    // read path would seek past EOF, returning empty results from valid .log
+    // data. Verify that recovery rebuilds an index whose offsets are bogus.
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Session 1: generate several sealed segments by rolling on a small max.
+    {
+      let log = create_log_with_segment_max(tmp.path(), 256).await;
+      for seq in 1..=40 {
+        let payload = format!("msg_{seq:03}");
+        append_message(&log, seq, "alice@localhost", payload.as_bytes(), 10_000).await;
+      }
+      log.flush().await.unwrap();
+    }
+
+    let channel_dir = {
+      let hash = channel_hash(&StringAtom::from("test_channel"));
+      tmp.path().join(hash.as_ref())
+    };
+
+    // Pick a sealed (non-last) .idx and corrupt it so the last offset points
+    // past the corresponding .log file size.
+    let mut log_files: Vec<_> = std::fs::read_dir(&channel_dir)
+      .unwrap()
+      .filter_map(|e| e.ok())
+      .filter(|e| e.path().extension().is_some_and(|ext| ext == "log"))
+      .collect();
+    log_files.sort_by_key(|e| e.file_name());
+    assert!(log_files.len() >= 3, "expected at least 3 segments, got {}", log_files.len());
+
+    let sealed_log_path = log_files[0].path();
+    let sealed_idx_path = sealed_log_path.with_extension("idx");
+    let sealed_log_size = std::fs::metadata(&sealed_log_path).unwrap().len();
+
+    // Overwrite the .idx with a single entry whose offset is past EOF.
+    let bogus_offset = sealed_log_size + 1_000_000;
+    let mut bogus_idx = Vec::with_capacity(INDEX_ENTRY_SIZE);
+    bogus_idx.extend_from_slice(&0u32.to_le_bytes());
+    bogus_idx.extend_from_slice(&bogus_offset.to_le_bytes());
+    std::fs::write(&sealed_idx_path, &bogus_idx).unwrap();
+
+    // Session 2: recovery should detect the bad offset and rebuild the index.
+    let log = create_log(tmp.path()).await;
+
+    assert_eq!(log.first_seq(), 1);
+    assert_eq!(log.last_seq(), 40);
+
+    // Read starting mid-segment (from_seq > segment's first_seq) so that the
+    // read path actually consults the index. Without the rebuild, the bogus
+    // offset lands past EOF and the corrupted segment yields zero entries —
+    // visitor.entries[0].seq would be the next segment's first seq instead
+    // of 2.
+    let mut visitor = CollectingVisitor::new();
+    let count = log.read(2, 10, &mut visitor).await.unwrap();
+    assert!(count >= 10, "expected at least 10 entries, got {count}");
+    assert_eq!(visitor.entries[0].seq, 2, "first segment was skipped (corrupt index not rebuilt)");
+    assert_eq!(visitor.entries[0].payload, b"msg_002");
+  }
+
+  #[compio::test]
+  async fn test_recovery_rebuilds_non_monotonic_sealed_index() {
+    // A non-monotonic .idx is invalid by construction even if every offset
+    // is in-range. Binary search may incidentally tolerate some misorderings,
+    // so we assert that the structural check actually rebuilt the file
+    // (its bytes no longer match the bogus content we wrote).
+    let tmp = tempfile::tempdir().unwrap();
+
+    {
+      let log = create_log_with_segment_max(tmp.path(), 256).await;
+      for seq in 1..=20 {
+        let payload = format!("msg_{seq:03}");
+        append_message(&log, seq, "alice@localhost", payload.as_bytes(), 10_000).await;
+      }
+      log.flush().await.unwrap();
+    }
+
+    let channel_dir = {
+      let hash = channel_hash(&StringAtom::from("test_channel"));
+      tmp.path().join(hash.as_ref())
+    };
+
+    // Pick the first sealed segment.
+    let mut log_files: Vec<_> = std::fs::read_dir(&channel_dir)
+      .unwrap()
+      .filter_map(|e| e.ok())
+      .filter(|e| e.path().extension().is_some_and(|ext| ext == SEGMENT_EXT))
+      .collect();
+    log_files.sort_by_key(|e| e.file_name());
+    assert!(log_files.len() >= 2, "expected at least 2 segments");
+
+    let sealed_log_path = log_files[0].path();
+    let sealed_idx_path = sealed_log_path.with_extension(INDEX_EXT);
+    let sealed_log_size = std::fs::metadata(&sealed_log_path).unwrap().len();
+    assert!(sealed_log_size > 40, "test assumes sealed log > 40 bytes");
+
+    // Three entries, all in-range, but rel_seq goes backwards (0 → 5 → 3)
+    // and so does offset (0 → 40 → 20). Passes every other check.
+    let mut bad_idx = Vec::with_capacity(3 * INDEX_ENTRY_SIZE);
+    bad_idx.extend_from_slice(&0u32.to_le_bytes());
+    bad_idx.extend_from_slice(&0u64.to_le_bytes());
+    bad_idx.extend_from_slice(&5u32.to_le_bytes());
+    bad_idx.extend_from_slice(&40u64.to_le_bytes());
+    bad_idx.extend_from_slice(&3u32.to_le_bytes());
+    bad_idx.extend_from_slice(&20u64.to_le_bytes());
+    std::fs::write(&sealed_idx_path, &bad_idx).unwrap();
+
+    // Session 2: recovery must rebuild this index.
+    let _log = create_log(tmp.path()).await;
+    let after = std::fs::read(&sealed_idx_path).unwrap();
+    assert_ne!(after, bad_idx, "non-monotonic .idx should have been rebuilt");
   }
 
   // ===== Factory =====
