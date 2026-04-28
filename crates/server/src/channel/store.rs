@@ -87,7 +87,9 @@ pub trait LogVisitor {
 #[async_trait(?Send)]
 pub trait MessageLog: 'static {
   /// Appends a message to the log, buffering it in memory without flushing to disk.
-  /// When the number of stored messages exceeds `max_messages`, the oldest entries should be evicted.
+  /// If `max_messages` is greater than `0` and the number of stored messages exceeds it,
+  /// the oldest entries should be evicted. A `max_messages` of `0` disables eviction
+  /// entirely (the log grows unbounded).
   /// Call `flush` to persist buffered writes to durable storage.
   async fn append(&self, message: &Message, payload: &PoolBuffer, max_messages: u32) -> anyhow::Result<()>;
 

@@ -499,6 +499,7 @@ Eviction is **count-based**, driven by `max_persist_messages`.
 ```
 After each append:
 │
+├─ If max_persist_messages == 0 → skip eviction (no retention limit)
 ├─ Compute logical first_seq = last_seq - max_persist_messages + 1
 ├─ For each segment (oldest first):
 │   └─ Is segment's last_seq < logical first_seq?
@@ -523,6 +524,10 @@ pushes the `.log` file past `SEGMENT_MAX_BYTES`. This is most visible when
 or under bursty traffic where a single segment fills before
 `max_persist_messages` worth of newer messages arrive. Operators sizing disk
 should plan accordingly.
+
+A `max_persist_messages` of `0` is interpreted as **no eviction** — the log
+grows unbounded. This is the de facto behavior of `MessageLog::append` when
+called with `max_messages == 0`.
 
 ## Recovery
 
