@@ -12,8 +12,8 @@ use async_trait::async_trait;
 
 use narwhal_common::core_dispatcher::CoreDispatcher;
 use narwhal_protocol::ErrorReason::{
-  BadRequest, ChannelIsFull, ChannelNotFound, Forbidden, NotAllowed, NotImplemented, PersistenceNotEnabled,
-  PolicyViolation, ResourceLimitReached, UserInChannel, UserNotInChannel, UserNotRegistered,
+  BadRequest, ChannelIsFull, ChannelNotFound, Forbidden, InternalServerError, NotAllowed, NotImplemented,
+  PersistenceNotEnabled, PolicyViolation, ResourceLimitReached, UserInChannel, UserNotInChannel, UserNotRegistered,
 };
 use narwhal_protocol::{
   AclAction, AclType, BroadcastAckParameters, ChannelAclParameters, ChannelConfigurationParameters,
@@ -551,7 +551,13 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       };
 
       let handler = persisted.handler.clone();
-      let message_log = self.message_log_factory.create(&handler).await;
+      let message_log = match self.message_log_factory.create(&handler).await {
+        Ok(log) => log,
+        Err(e) => {
+          warn!(handler = %handler, error = %e, "skipping channel restore: failed to create message log");
+          continue;
+        },
+      };
 
       let mut channel = Channel::new(handler.clone(), persisted.config, self.notifier.clone(), message_log);
       channel.owner = persisted.owner;
@@ -665,7 +671,14 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         persist: Some(false),
         message_flush_interval: Some(0),
       };
-      let message_log = self.message_log_factory.create(&handler).await;
+      let message_log = match self.message_log_factory.create(&handler).await {
+        Ok(log) => log,
+        Err(e) => {
+          warn!(handler = %handler, error = %e, "failed to create message log for new channel");
+          self.metrics.channel_joins.get_or_create(&FAILURE).inc();
+          return Err(narwhal_protocol::Error::new(InternalServerError).with_id(correlation_id).into());
+        },
+      };
       self.channels.insert(handler.clone(), Channel::new(handler.clone(), config, self.notifier.clone(), message_log));
       self.total_channels.fetch_add(1, Ordering::SeqCst);
     }

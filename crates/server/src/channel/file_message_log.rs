@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
+use anyhow::Context;
 use async_trait::async_trait;
 use compio::BufResult;
 use compio::io::{AsyncReadAtExt, AsyncWriteAtExt};
@@ -329,7 +330,13 @@ struct Inner {
 
 impl FileMessageLog {
   /// Create a new (or recover an existing) message log rooted at `channel_dir`.
-  async fn open(channel_dir: PathBuf, max_payload_size: u32, metrics: MessageLogMetrics) -> Self {
+  ///
+  /// Returns an error if recovery cannot bring the channel into a consistent
+  /// writable state (e.g. the active segment's `.log` cannot be opened for
+  /// writes, the active `.idx` cannot be opened or memory-mapped). Callers
+  /// should refuse to bring the affected channel online rather than continue
+  /// with a half-initialized log that would silently drop index updates.
+  async fn open(channel_dir: PathBuf, max_payload_size: u32, metrics: MessageLogMetrics) -> anyhow::Result<Self> {
     Self::open_with_segment_max(channel_dir, max_payload_size, SEGMENT_MAX_BYTES, metrics).await
   }
 
@@ -338,7 +345,7 @@ impl FileMessageLog {
     max_payload_size: u32,
     segment_max_bytes: u64,
     metrics: MessageLogMetrics,
-  ) -> Self {
+  ) -> anyhow::Result<Self> {
     let mut inner = Inner {
       channel_dir,
       max_payload_size,
@@ -356,21 +363,22 @@ impl FileMessageLog {
       metrics,
     };
     let start = Instant::now();
-    inner.recover().await;
+    let result = inner.recover().await;
     inner.metrics.recovery_duration_seconds.observe(start.elapsed().as_secs_f64());
-    FileMessageLog { inner: RefCell::new(inner) }
+    result?;
+    Ok(FileMessageLog { inner: RefCell::new(inner) })
   }
 }
 
 // === impl Inner ===
 
 impl Inner {
-  async fn recover(&mut self) {
+  async fn recover(&mut self) -> anyhow::Result<()> {
     // list_segment_seqs uses std_fs::read_dir (no compio equivalent).
     // If the directory doesn't exist, read_dir fails and returns an empty Vec.
     let mut seg_seqs = Self::list_segment_seqs(&self.channel_dir);
     if seg_seqs.is_empty() {
-      return;
+      return Ok(());
     }
     seg_seqs.sort();
 
@@ -454,29 +462,55 @@ impl Inner {
     // Open active segment for appending — only when the last seg_seqs entry
     // was actually recovered. Otherwise leave active_log = None so the next
     // append creates a fresh segment via Inner::create_segment.
+    //
+    // Failures here are fatal: if we can't open the active log for writes or
+    // memory-map its index, the channel cannot accept appends without
+    // silently dropping index updates (which would corrupt subsequent reads
+    // on this segment). Bubble the error so the caller refuses to bring the
+    // channel online; other channels keep running.
     if active_segment_recovered && let Some(seg) = self.segments.last() {
       let log_path = self.segment_log_path(seg.first_seq);
       let idx_path = self.segment_idx_path(seg.first_seq);
 
       // No append mode in compio — use positioned writes at seg.file_size.
-      self.active_log = compio::fs::OpenOptions::new().write(true).open(&log_path).await.ok();
+      let log_file = compio::fs::OpenOptions::new()
+        .write(true)
+        .open(&log_path)
+        .await
+        .with_context(|| format!("opening active segment .log for writes: {}", log_path.display()))?;
 
       // Extend the active index file to its pre-allocated capacity and mmap read-write.
-      let actual_size = compio::fs::metadata(&idx_path).await.map(|m| m.len()).unwrap_or(0) as usize;
+      // Read the size from the already-open handle (no TOCTOU; metadata errors
+      // propagate instead of silently masking the resume position to 0).
+      let idx_file = compio::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&idx_path)
+        .await
+        .with_context(|| format!("opening active segment .idx: {}", idx_path.display()))?;
+      let actual_size = idx_file
+        .metadata()
+        .await
+        .with_context(|| format!("reading active segment .idx size: {}", idx_path.display()))?
+        .len() as usize;
       let capacity = self.idx_capacity();
-      if let Ok(idx_file) = compio::fs::OpenOptions::new().read(true).write(true).open(&idx_path).await {
-        if (actual_size as u64) < capacity {
-          let _ = idx_file.set_len(capacity).await;
-        }
-        // SAFETY: Single-threaded shard actor; no concurrent access. The active index
-        // file is only written to through this mmap.
-        if let Ok(mmap) = unsafe { MmapMut::map_mut(&idx_file) } {
-          self.active_idx_file = Some(idx_file);
-          self.active_idx_mmap = Some(mmap);
-          self.active_idx_write_pos = actual_size;
-        }
+      if (actual_size as u64) < capacity {
+        idx_file.set_len(capacity).await.with_context(|| {
+          format!("extending active segment .idx to pre-allocated capacity: {}", idx_path.display())
+        })?;
       }
+      // SAFETY: Single-threaded shard actor; no concurrent access. The active index
+      // file is only written to through this mmap.
+      let mmap = unsafe { MmapMut::map_mut(&idx_file) }
+        .with_context(|| format!("memory-mapping active segment .idx: {}", idx_path.display()))?;
+
+      self.active_log = Some(log_file);
+      self.active_idx_file = Some(idx_file);
+      self.active_idx_mmap = Some(mmap);
+      self.active_idx_write_pos = actual_size;
     }
+
+    Ok(())
   }
 
   /// Sanity-check a sealed segment's `.idx` file before mmapping it.
@@ -1068,16 +1102,27 @@ impl MessageLog for FileMessageLog {
       };
 
       // Use index to seek close to from_seq within this segment.
+      // Discriminate by position, not by `seg.idx_mmap.is_some()`: a sealed
+      // segment with `idx_mmap == None` (e.g., a previous mmap_index failure)
+      // must NOT fall through to `active_idx_mmap`, which belongs to a
+      // different segment and would yield offsets outside this segment.
       let start_offset = if i == seg_idx && from_seq > seg.first_seq {
         let target_rel = (from_seq - seg.first_seq) as u32;
-        if let Some(ref mmap) = seg.idx_mmap {
-          // Sealed segment: binary search the read-only memory-mapped index.
-          Inner::index_lookup_in(mmap, target_rel).unwrap_or(0)
-        } else if let Some(ref mmap) = this.active_idx_mmap {
-          // Active segment: binary search the read-write memory-mapped index.
+        // Treat a segment as active only when an active mmap is actually
+        // open. After a recovery that left the on-disk active segment empty
+        // and removed it, `segments.last()` is sealed and has its own
+        // `idx_mmap`; we must use that rather than fall through to a
+        // (None) `active_idx_mmap` and force a full scan.
+        let is_active = i == this.segments.len() - 1 && this.active_idx_mmap.is_some();
+        if is_active {
+          // Active segment: read-write mmap, bounded to the actual write position.
+          let mmap = this.active_idx_mmap.as_ref().expect("active_idx_mmap must be Some when is_active is true");
           Inner::index_lookup_in(&mmap[..this.active_idx_write_pos], target_rel).unwrap_or(0)
         } else {
-          0
+          // Sealed segment: read-only mmap; if missing, fall back to scanning
+          // from the segment start (correctness preserved at the cost of a
+          // linear scan).
+          if let Some(ref mmap) = seg.idx_mmap { Inner::index_lookup_in(mmap, target_rel).unwrap_or(0) } else { 0 }
         }
       } else {
         0
@@ -1147,7 +1192,7 @@ impl FileMessageLogFactory {
 impl MessageLogFactory for FileMessageLogFactory {
   type Log = FileMessageLog;
 
-  async fn create(&self, handler: &StringAtom) -> FileMessageLog {
+  async fn create(&self, handler: &StringAtom) -> anyhow::Result<FileMessageLog> {
     let hash = channel_hash(handler);
     let channel_dir = self.data_dir.join(hash.as_ref());
     match self.segment_max_bytes {
@@ -1224,7 +1269,7 @@ mod tests {
   /// Helper: create a FileMessageLog in a temp directory.
   async fn create_log(dir: &std::path::Path) -> FileMessageLog {
     let factory = FileMessageLogFactory::new(dir.to_path_buf(), TEST_MAX_PAYLOAD_SIZE, MessageLogMetrics::noop());
-    factory.create(&StringAtom::from("test_channel")).await
+    factory.create(&StringAtom::from("test_channel")).await.expect("recovery should succeed in tests")
   }
 
   /// Helper: create a FileMessageLog with a custom segment size threshold.
@@ -1238,6 +1283,7 @@ mod tests {
       MessageLogMetrics::noop(),
     )
     .await
+    .expect("recovery should succeed in tests")
   }
 
   /// Helper: append a single message with the given seq, from, and payload.
@@ -2024,6 +2070,55 @@ mod tests {
     assert_ne!(after, bad_idx, "non-monotonic .idx should have been rebuilt");
   }
 
+  #[compio::test]
+  async fn test_read_does_not_fall_through_to_active_idx_when_sealed_idx_missing() {
+    // Regression test: when a sealed segment has `idx_mmap == None` (e.g.
+    // mmap_index failed earlier) the read path must NOT consult
+    // active_idx_mmap, whose offsets belong to a different segment. We force
+    // that scenario in-process by:
+    //   - building a multi-segment log,
+    //   - clearing the first sealed segment's `idx_mmap`,
+    //   - planting a deliberately bogus offset (past EOF for segment 0) into
+    //     active_idx_mmap entry-0.
+    // Without the fix, the read path uses the bogus offset and yields zero
+    // entries from the affected segment; with the fix it falls back to a
+    // full scan and returns the correct entries.
+    let tmp = tempfile::tempdir().unwrap();
+    let log = create_log_with_segment_max(tmp.path(), 256).await;
+    for seq in 1..=20 {
+      let payload = format!("msg_{seq:03}");
+      append_message(&log, seq, "alice@localhost", payload.as_bytes(), 10_000).await;
+    }
+    log.flush().await.unwrap();
+
+    {
+      let mut inner = log.inner.borrow_mut();
+      assert!(inner.segments.len() >= 2, "need multiple segments");
+      // Clear the first sealed segment's mmap.
+      inner.segments[0].idx_mmap = None;
+
+      // Plant a bogus offset (past segment 0's file_size) in active_idx_mmap
+      // entry-0 so any fallthrough lookup returns it.
+      let seg0_size = inner.segments[0].file_size;
+      let bogus = seg0_size + 1_000_000;
+      let mmap = inner.active_idx_mmap.as_mut().expect("active mmap should be set in tests");
+      // entry-0: relative_seq(4) at [0..4] = 0, offset(8) at [4..12] = bogus
+      mmap[0..4].copy_from_slice(&0u32.to_le_bytes());
+      mmap[4..12].copy_from_slice(&bogus.to_le_bytes());
+      // Make sure the binary search sees at least the planted entry.
+      if inner.active_idx_write_pos < INDEX_ENTRY_SIZE {
+        inner.active_idx_write_pos = INDEX_ENTRY_SIZE;
+      }
+    }
+
+    // Read mid-segment to force an index lookup on segment 0.
+    let mut visitor = CollectingVisitor::new();
+    let count = log.read(2, 5, &mut visitor).await.unwrap();
+    assert_eq!(count, 5);
+    assert_eq!(visitor.entries[0].seq, 2, "fall-through to active_idx_mmap dropped segment 0 reads");
+    assert_eq!(visitor.entries[0].payload, b"msg_002");
+  }
+
   // ===== Factory =====
 
   #[compio::test]
@@ -2032,8 +2127,8 @@ mod tests {
     let factory =
       FileMessageLogFactory::new(tmp.path().to_path_buf(), TEST_MAX_PAYLOAD_SIZE, MessageLogMetrics::noop());
 
-    let log_a = factory.create(&StringAtom::from("channel_a")).await;
-    let log_b = factory.create(&StringAtom::from("channel_b")).await;
+    let log_a = factory.create(&StringAtom::from("channel_a")).await.unwrap();
+    let log_b = factory.create(&StringAtom::from("channel_b")).await.unwrap();
 
     append_message(&log_a, 1, "alice@localhost", b"for_a", 100).await;
     append_message(&log_b, 1, "bob@localhost", b"for_b", 100).await;

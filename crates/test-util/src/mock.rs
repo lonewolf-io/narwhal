@@ -110,8 +110,8 @@ impl FailingMessageLogFactory {
 impl MessageLogFactory for FailingMessageLogFactory {
   type Log = FailingMessageLog;
 
-  async fn create(&self, _handler: &StringAtom) -> FailingMessageLog {
-    FailingMessageLog { should_fail: self.should_fail.clone() }
+  async fn create(&self, _handler: &StringAtom) -> anyhow::Result<FailingMessageLog> {
+    Ok(FailingMessageLog { should_fail: self.should_fail.clone() })
   }
 }
 

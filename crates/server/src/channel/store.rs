@@ -62,7 +62,12 @@ pub trait MessageLogFactory: Clone + Send + Sync + 'static {
   type Log: MessageLog;
 
   /// Creates a message log for the given channel handler.
-  async fn create(&self, handler: &StringAtom) -> Self::Log;
+  ///
+  /// Implementations may perform fallible I/O (e.g. opening the channel
+  /// directory, recovering on-disk state, memory-mapping index files). Errors
+  /// are returned so the caller can refuse to bring the affected channel
+  /// online — the rest of the server keeps running.
+  async fn create(&self, handler: &StringAtom) -> anyhow::Result<Self::Log>;
 }
 
 /// A single entry read from the message log.
@@ -162,7 +167,7 @@ pub struct NoopMessageLogFactory;
 impl MessageLogFactory for NoopMessageLogFactory {
   type Log = NoopMessageLog;
 
-  async fn create(&self, _handler: &StringAtom) -> NoopMessageLog {
-    NoopMessageLog
+  async fn create(&self, _handler: &StringAtom) -> anyhow::Result<NoopMessageLog> {
+    Ok(NoopMessageLog)
   }
 }
