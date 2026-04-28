@@ -511,6 +511,19 @@ retention window. This means actual disk usage may slightly exceed
 `max_persist_messages` worth of data (by up to one segment's worth of extra
 messages), but the trade-off is clean O(1) eviction with no rewriting.
 
+**Active-segment invariant:** the active (last) segment is **never** evicted,
+even if all of its entries fall outside the retention window — there must
+always be a segment to append into. The worst-case on-disk overhead per
+channel is therefore approximately one segment's worth of data: about
+`SEGMENT_MAX_BYTES` (128 MiB) above `max_persist_messages * avg_entry_size`,
+plus the active `.idx` file's pre-allocated capacity (~384 KB by default) and
+up to one extra entry, since segment rollover only fires after an append
+pushes the `.log` file past `SEGMENT_MAX_BYTES`. This is most visible when
+`max_persist_messages` is small relative to `SEGMENT_MAX_BYTES / avg_entry_size`,
+or under bursty traffic where a single segment fills before
+`max_persist_messages` worth of newer messages arrive. Operators sizing disk
+should plan accordingly.
+
 ## Recovery
 
 On startup, the message log restores its state from disk. Recovery is **fully

@@ -767,6 +767,8 @@ impl Inner {
 
     let retain_from = self.cached_last_seq.saturating_sub(max_messages as u64 - 1);
 
+    // The active (last) segment is never evicted — there must always be a
+    // segment to append into.
     while self.segments.len() > 1 {
       if self.segments[0].last_seq < retain_from {
         // Drop the segment (and its mmap) before deleting the underlying files.
