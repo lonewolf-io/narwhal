@@ -152,6 +152,7 @@ memory-mapped files (`mmap`) for efficient access.
 | Property         | Value              |
 |------------------|--------------------|
 | Interval         | Every **4096 bytes** of log data written |
+| Entry-0 rule     | An index entry is always written at offset 0 of each segment, regardless of the interval |
 | Header           | None (Kafka-style) |
 | CRC              | None (derived data; rebuilt from `.log` if corrupt) |
 
@@ -193,6 +194,12 @@ capacity = (segment_max_bytes / INDEX_INTERVAL_BYTES + 1) * INDEX_ENTRY_SIZE
 
 For the default 128 MiB segments with 4096-byte index interval:
 `(128 * 1024 * 1024 / 4096 + 1) * 12 ≈ 384 KB`.
+
+The `+ 1` term accounts for the entry-0 rule above: every segment writes an
+index entry at offset 0 regardless of the interval, so the upper bound on
+entries is `(segment_max_bytes / INDEX_INTERVAL_BYTES) + 1`. Changing either
+the formula or the entry-0 rule without updating the other can silently
+overflow the pre-allocated capacity.
 
 New index entries are written directly into the mmap at the current write
 position (`active_idx_write_pos`). This avoids `write()` syscalls for index

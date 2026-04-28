@@ -785,7 +785,10 @@ impl Inner {
   }
 
   fn maybe_write_index_entry(&mut self, seq: u64, entry_offset: u64) {
-    let base_seq = self.segments.last().map_or(1, |s| s.first_seq);
+    // Callers (only `append`) ensure a segment exists before invoking this.
+    // Failing loudly here is preferable to a `1` fallback that would underflow
+    // `(seq - base_seq) as u32` if the invariant ever changed.
+    let base_seq = self.segments.last().expect("maybe_write_index_entry called with no active segment").first_seq;
     let is_first_in_segment = entry_offset == 0;
 
     if is_first_in_segment || self.bytes_since_index >= INDEX_INTERVAL_BYTES {
