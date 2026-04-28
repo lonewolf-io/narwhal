@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BSD-3-Clause
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 use narwhal_util::string_atom::StringAtom;
 
 use super::store::{ChannelStore, PersistedChannel};
+use crate::util::file::atomic_write;
 
 const METADATA_FILE: &str = "metadata.bin";
 const METADATA_TMP_FILE: &str = "metadata.bin.tmp";
@@ -40,32 +41,6 @@ impl FileChannelStore {
   fn channel_dir(&self, hash: &str) -> PathBuf {
     self.data_dir.join(hash)
   }
-
-  /// Atomically writes `data` to `file_path` using write-tmp-rename-fsync.
-  async fn atomic_write(&self, dir: &Path, data: &[u8]) -> anyhow::Result<()> {
-    let tmp_path = dir.join(METADATA_TMP_FILE);
-    let final_path = dir.join(METADATA_FILE);
-
-    // Write to temp file.
-    let buf = data.to_vec();
-    let compio::BufResult(result, _) = compio::fs::write(&tmp_path, buf).await;
-    result?;
-
-    // Fsync the temp file.
-    let file = compio::fs::File::open(&tmp_path).await?;
-    file.sync_all().await?;
-    file.close().await?;
-
-    // Rename temp → final.
-    compio::fs::rename(&tmp_path, &final_path).await?;
-
-    // Fsync the parent directory.
-    let dir_file = compio::fs::File::open(dir).await?;
-    dir_file.sync_all().await?;
-    dir_file.close().await?;
-
-    Ok(())
-  }
 }
 
 #[async_trait(?Send)]
@@ -77,7 +52,10 @@ impl ChannelStore for FileChannelStore {
     compio::fs::create_dir_all(&dir).await?;
 
     let data = postcard::to_allocvec(channel)?;
-    self.atomic_write(&dir, &data).await?;
+    let final_path = dir.join(METADATA_FILE);
+    let tmp_path = dir.join(METADATA_TMP_FILE);
+    let (result, _) = atomic_write(&final_path, &tmp_path, data).await;
+    result?;
     Ok(hash)
   }
 

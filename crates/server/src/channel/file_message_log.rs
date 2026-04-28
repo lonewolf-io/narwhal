@@ -776,60 +776,16 @@ impl Inner {
       pos += reader.entry_size;
     }
 
-    // Write to a temp sibling, fsync, close, rename, then fsync the parent
-    // directory so the rename itself is durable across crashes. The previous
-    // `.idx` (if any) stays on disk untouched until the rename succeeds.
-    // Closing before rename avoids cross-platform issues (Windows can't
-    // rename an open file).
+    // The previous `.idx` (if any) stays on disk untouched until the rename
+    // succeeds. On any failure during the atomic write, also drop the
+    // existing `.idx` so the read path falls back to a full-segment scan
+    // (`mmap_index` returns `None`) instead of trusting a stale index.
     let tmp_path = idx_path.with_extension("tmp");
-    let tmp_file = match compio::fs::File::create(&tmp_path).await {
-      Ok(f) => f,
-      Err(_) => {
-        // A stale `<first_seq>.tmp` from a prior crashed run may still be on
-        // disk; clean it up so it doesn't accumulate over time.
-        drop_indexes(idx_path, Some(&tmp_path)).await;
-        return;
-      },
-    };
-
     let buf = std::mem::take(idx_buf);
-    let mut file_ref = &tmp_file;
-    let BufResult(result, buf) = file_ref.write_all_at(buf, 0).await;
+    let (result, buf) = crate::util::file::atomic_write(idx_path, &tmp_path, buf).await;
     *idx_buf = buf;
     if result.is_err() {
-      // Close before unlinking — Windows can't remove an open file.
-      let _ = tmp_file.close().await;
       drop_indexes(idx_path, Some(&tmp_path)).await;
-      return;
-    }
-
-    if tmp_file.sync_all().await.is_err() {
-      let _ = tmp_file.close().await;
-      drop_indexes(idx_path, Some(&tmp_path)).await;
-      return;
-    }
-
-    // `close` consumes `tmp_file`; from here on it can't be referenced again.
-    if tmp_file.close().await.is_err() {
-      drop_indexes(idx_path, Some(&tmp_path)).await;
-      return;
-    }
-
-    if compio::fs::rename(&tmp_path, idx_path).await.is_err() {
-      drop_indexes(idx_path, Some(&tmp_path)).await;
-      return;
-    }
-
-    // Best-effort: fsync the parent directory so the rename is durable
-    // across a crash. Failure here only affects post-crash visibility of
-    // the rename — the file contents are fully written and the next
-    // recovery validates the index regardless. Close the handle explicitly
-    // to avoid leaking a file descriptor.
-    if let Some(parent) = idx_path.parent()
-      && let Ok(dir_file) = compio::fs::File::open(parent).await
-    {
-      let _ = dir_file.sync_all().await;
-      let _ = dir_file.close().await;
     }
   }
 
