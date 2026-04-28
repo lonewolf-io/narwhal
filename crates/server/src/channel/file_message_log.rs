@@ -376,6 +376,13 @@ impl Inner {
 
     let mut idx_buf = Vec::with_capacity(self.idx_capacity() as usize);
 
+    // Tracks whether the last seg_seqs entry was successfully recovered as the
+    // active segment. If false (e.g. zero-byte .log, or every entry failed CRC),
+    // we must NOT promote a preceding sealed segment to active — that would
+    // open a sealed .log for writes and double-map its .idx (read-only +
+    // writable) to the same file.
+    let mut active_segment_recovered = false;
+
     // Process each segment.
     for (i, &base_seq) in seg_seqs.iter().enumerate() {
       let log_path = self.segment_log_path(base_seq);
@@ -410,6 +417,7 @@ impl Inner {
           // Rebuild the index from the validated log.
           Self::rebuild_index(&log_path, &idx_path, base_seq, &mut self.reader, &mut idx_buf).await;
           self.segments.push(SegmentInfo { first_seq: base_seq, last_seq, file_size: valid_size, idx_mmap: None });
+          active_segment_recovered = true;
         } else {
           // No valid entries at all — remove the segment.
           let _ = compio::fs::remove_file(&log_path).await;
@@ -443,8 +451,10 @@ impl Inner {
       self.cached_last_seq = last.last_seq;
     }
 
-    // Open active segment for appending.
-    if let Some(seg) = self.segments.last() {
+    // Open active segment for appending — only when the last seg_seqs entry
+    // was actually recovered. Otherwise leave active_log = None so the next
+    // append creates a fresh segment via Inner::create_segment.
+    if active_segment_recovered && let Some(seg) = self.segments.last() {
       let log_path = self.segment_log_path(seg.first_seq);
       let idx_path = self.segment_idx_path(seg.first_seq);
 
@@ -1702,6 +1712,92 @@ mod tests {
       assert_eq!(visitor.entries[4].seq, 5);
       assert_eq!(visitor.entries[4].payload, b"complete");
     }
+  }
+
+  #[compio::test]
+  async fn test_recovery_does_not_promote_sealed_segment_when_active_invalid() {
+    // Regression test: if the active (last) segment validates to zero entries,
+    // recovery must delete it without "promoting" the previous sealed segment
+    // — otherwise subsequent appends would extend a sealed segment's .log and
+    // remap its .idx as MmapMut, corrupting filename-derived first_seq.
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Session 1: create several segments.
+    let appended = 30u64;
+    {
+      let log = create_log_with_segment_max(tmp.path(), 256).await;
+      for seq in 1..=appended {
+        let payload = format!("msg_{seq:03}");
+        append_message(&log, seq, "alice@localhost", payload.as_bytes(), 10_000).await;
+      }
+      log.flush().await.unwrap();
+    }
+
+    let channel_dir = {
+      let hash = channel_hash(&StringAtom::from("test_channel"));
+      tmp.path().join(hash.as_ref())
+    };
+
+    // Find sealed (penultimate) and active (last) segment paths.
+    let mut log_files: Vec<_> = std::fs::read_dir(&channel_dir)
+      .unwrap()
+      .filter_map(|e| e.ok())
+      .filter(|e| e.path().extension().is_some_and(|ext| ext == SEGMENT_EXT))
+      .collect();
+    log_files.sort_by_key(|e| e.file_name());
+    assert!(log_files.len() >= 2, "expected multiple segments, got {}", log_files.len());
+
+    let active_log_path = log_files.last().unwrap().path();
+    let active_idx_path = active_log_path.with_extension(INDEX_EXT);
+    let sealed_log_path = log_files[log_files.len() - 2].path();
+    let sealed_idx_path = sealed_log_path.with_extension(INDEX_EXT);
+
+    // Snapshot the sealed segment's bytes before corrupting the active. The
+    // assertions below compare full file contents (not just sizes) so the
+    // test catches same-size mutations as well as resizes.
+    let sealed_log_before = std::fs::read(&sealed_log_path).unwrap();
+    let sealed_idx_before = std::fs::read(&sealed_idx_path).unwrap();
+
+    // Truncate the active .log to a partial header (< ENTRY_HEADER_SIZE) so
+    // scan_and_validate reports zero valid entries.
+    {
+      let f = std::fs::OpenOptions::new().write(true).open(&active_log_path).unwrap();
+      f.set_len(10).unwrap();
+    }
+
+    // Session 2: recover.
+    let log = create_log(tmp.path()).await;
+
+    // Active segment files should be deleted.
+    assert!(!active_log_path.exists(), "active .log should have been removed");
+    assert!(!active_idx_path.exists(), "active .idx should have been removed");
+
+    // Sealed segment files must be byte-for-byte unchanged. Without the fix,
+    // recovery would (a) open the sealed .log for writes and (b) extend the
+    // sealed .idx to ~384 KB via set_len(capacity).
+    assert_eq!(std::fs::read(&sealed_log_path).unwrap(), sealed_log_before, "sealed .log was modified");
+    assert_eq!(std::fs::read(&sealed_idx_path).unwrap(), sealed_idx_before, "sealed .idx was modified");
+
+    // Append after recovery must create a NEW segment, not extend the sealed one.
+    let new_seq = appended + 100;
+    append_message(&log, new_seq, "alice@localhost", b"after_recovery", 10_000).await;
+    log.flush().await.unwrap();
+
+    // Sealed segment is still byte-for-byte unchanged on disk.
+    assert_eq!(std::fs::read(&sealed_log_path).unwrap(), sealed_log_before);
+    assert_eq!(std::fs::read(&sealed_idx_path).unwrap(), sealed_idx_before);
+
+    // A new segment file exists named after `new_seq`.
+    let new_seg_path = channel_dir.join(format!("{new_seq:020}.{SEGMENT_EXT}"));
+    assert!(new_seg_path.exists(), "expected a fresh segment file at {new_seg_path:?}");
+
+    // last_seq reflects the appended value, and the new entry is readable.
+    assert_eq!(log.last_seq(), new_seq);
+    let mut visitor = CollectingVisitor::new();
+    log.read(new_seq, 10, &mut visitor).await.unwrap();
+    assert_eq!(visitor.entries.len(), 1);
+    assert_eq!(visitor.entries[0].seq, new_seq);
+    assert_eq!(visitor.entries[0].payload, b"after_recovery");
   }
 
   #[compio::test]

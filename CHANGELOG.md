@@ -4,6 +4,7 @@ All notable changes to Narwhal will be documented in this file.
 
 ## Unreleased
 
+* [BUGFIX]: Don't promote a sealed segment to "active" during message-log recovery when the on-disk active segment validates to zero entries. [#254](https://github.com/lonewolf-io/narwhal/pull/254)
 * [BUGFIX]: Reject oversized `from`/payload in message-log append to prevent silent segment-tail truncation on recovery. [#250](https://github.com/lonewolf-io/narwhal/pull/250)
 * [BUGFIX]: Avoid blocking shard runtimes on message-log index flush by replacing synchronous `mmap.flush()` with async `.idx` file `sync_all()`. [#249](https://github.com/lonewolf-io/narwhal/pull/249)
 
