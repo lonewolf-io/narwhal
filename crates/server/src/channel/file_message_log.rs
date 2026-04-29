@@ -937,10 +937,17 @@ impl Inner {
       if self.segments[0].last_seq < retain_from {
         // Drop the segment (and its mmap) before deleting the underlying files.
         let removed = self.segments.remove(0);
+        let log_path = self.segment_log_path(removed.first_seq);
+        let idx_path = self.segment_idx_path(removed.first_seq);
+        // Use the on-disk file size for the evicted-bytes metric so that
+        // truncated sealed segments (where `removed.file_size == valid_size`,
+        // smaller than the physical file) still report the actual disk space
+        // reclaimed. Fall back to `removed.file_size` if stat fails.
+        let physical_size = compio::fs::metadata(&log_path).await.map(|m| m.len()).unwrap_or(removed.file_size);
         self.metrics.segments_evicted.inc();
-        self.metrics.evicted_bytes.inc_by(removed.file_size);
-        let _ = compio::fs::remove_file(self.segment_log_path(removed.first_seq)).await;
-        let _ = compio::fs::remove_file(self.segment_idx_path(removed.first_seq)).await;
+        self.metrics.evicted_bytes.inc_by(physical_size);
+        let _ = compio::fs::remove_file(log_path).await;
+        let _ = compio::fs::remove_file(idx_path).await;
       } else {
         break;
       }
@@ -1911,8 +1918,9 @@ mod tests {
       log.flush().await.unwrap();
     }
 
-    // Truncation counter is per-recovery; the *first* recovery saw clean
-    // segments, so it must still be zero.
+    // The shared truncation counter is incremented during recovery when a
+    // sealed segment is truncated. The first recovery saw clean segments,
+    // so it must still be zero here.
     assert_eq!(metrics.sealed_segment_truncations.get(), 0);
 
     let channel_dir = {
