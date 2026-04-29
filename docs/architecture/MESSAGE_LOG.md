@@ -1,7 +1,7 @@
 # Message Log — Architecture Specification
 
 > **Status:** Implemented.
-> **Related PRs:** [#221](https://github.com/narwhal-io/narwhal/pull/221) (HISTORY/CHAN_SEQ protocol), [#227](https://github.com/narwhal-io/narwhal/pull/227) (FileMessageLog implementation)
+> **Related PRs:** [#221](https://github.com/lonewolf-io/narwhal/pull/221) (HISTORY/CHAN_SEQ protocol), [#227](https://github.com/lonewolf-io/narwhal/pull/227) (FileMessageLog implementation)
 
 ## Table of Contents
 
@@ -201,6 +201,19 @@ entries is `(segment_max_bytes / INDEX_INTERVAL_BYTES) + 1`. Changing either
 the formula or the entry-0 rule without updating the other can silently
 overflow the pre-allocated capacity.
 
+**Overshoot interaction.** Because the segment roll check fires *after* an
+append (see [Segment Roll](#segment-roll)), a segment can grow up to one entry
+beyond `SEGMENT_MAX_BYTES`. If that final overshooting append also crosses an
+index interval boundary while the index is at peak utilization, the
+implementation has no slot left to record it. The append path guards with
+`pos + INDEX_ENTRY_SIZE <= mmap.len()` and silently drops the would-be index
+entry — correctness is preserved (no out-of-bounds write, the segment rolls
+on the next append), but the un-indexed tail of that segment will be reached
+by a linear scan from the previous index entry. The scan distance is bounded
+by `INDEX_INTERVAL_BYTES + max_entry_size`. Bumping the formula by one slot
+would eliminate the silent skip; the trade-off is a few extra bytes of
+pre-allocation per segment.
+
 New index entries are written directly into the mmap at the current write
 position (`active_idx_write_pos`). This avoids `write()` syscalls for index
 updates — the kernel handles page dirtying and writeback. The active `.idx`
@@ -279,8 +292,20 @@ pub trait MessageLog: 'static {
     /// Read entries starting at `from_seq`, up to `limit` entries.
     /// Calls `visitor.visit()` for each entry. Returns the number of
     /// entries visited.
+    ///
     /// Async because file reads use io_uring (compio). The visitor callback
     /// is also async, borrowing data from the EntryReader's buffers.
+    ///
+    /// **Bounds:**
+    /// - `from_seq < first_seq()` is clamped to `first_seq()`; the read
+    ///   begins at the oldest retained entry.
+    /// - `from_seq > last_seq()` returns `Ok(0)` without invoking the
+    ///   visitor.
+    ///
+    /// **Visitor errors:** if `visit()` returns `Err`, `read()` propagates
+    /// the error and does **not** report a partial count. Entries already
+    /// passed to the visitor before the failure are considered the
+    /// visitor's responsibility (e.g., already-sent network frames).
     async fn read(
         &self,
         from_seq: u64,
@@ -292,7 +317,9 @@ pub trait MessageLog: 'static {
 
 **Key design decisions:**
 - `first_seq()` and `last_seq()` return `u64` directly (not `Result`) because
-  they are in-memory values updated on append/eviction.
+  they are in-memory values updated on append/eviction. Sequence numbers
+  start at 1; `0` is reserved as the empty-log sentinel returned by both
+  methods when the log has no retained entries.
 - `read` is async (io_uring positioned reads via `EntryReader`) and the visitor
   is also async, allowing it to perform I/O (e.g., sending messages) between
   entry reads.
@@ -360,8 +387,10 @@ append(message, payload, max_messages)
 │
 ├─ 1. Serialize entry: seq | timestamp | from_len | payload_len | from | payload | crc32
 ├─ 2. write_all_at(entry, seg.file_size) via io_uring (compio positioned write)
-├─ 3. If 4096+ bytes written since last index entry → write index entry into .idx mmap
-│     (checked before updating bytes_since_index so the threshold reflects pre-write state)
+├─ 3. If this is the first entry in the segment, OR `bytes_since_index >= 4096`
+│     → write an index entry into the .idx mmap pointing at the *current*
+│     entry's offset (the offset before this append's write extends the file),
+│     then reset `bytes_since_index` to 0
 ├─ 4. Update in-memory state (bytes_since_index, last_seq, segment byte count)
 ├─ 5. If segment exceeds 128 MiB → roll to new segment (see Segment Roll)
 └─ 6. If (last_seq - first_seq + 1) > max_messages → evict oldest segment(s)
@@ -388,6 +417,14 @@ inside async shard code.
 in the kernel page cache) but not power loss without fsync. The existing flush
 mechanism (immediate when `message_flush_interval=0`, or periodic via background
 task) is unchanged.
+
+**Linux dependency.** Skipping `mmap.flush()` (i.e. `msync`) and relying on
+`sync_all()` of the underlying file handle to flush pages dirtied through
+`MmapMut` is correct on Linux because file-backed mmaps share the unified
+page cache with regular file I/O — `fsync(2)` flushes all dirty pages backing
+the file regardless of how they were dirtied. POSIX does not guarantee this
+in general; the design assumes the io_uring/Linux runtime environment
+already required by the rest of the project.
 
 ### Segment Roll
 
@@ -453,7 +490,18 @@ struct EntryReader {
 | Header buffer | 22 bytes (fixed) |
 | Body buffer | `NID_MAX_LENGTH` (510) + `max_payload_size` + 4 bytes |
 | Lifetime    | Created once at construction, reused across all operations (reads, recovery, index rebuilds) |
-| Guarantee   | Always fits any valid entry's body (from + payload + CRC) |
+| Guarantee   | Always fits any valid entry's body (from + payload + CRC) at the *current* `max_payload_size` |
+
+**`max_payload_size` stability requirement.** The body buffer is sized at
+construction time using the configured `max_payload_size`. The append path
+rejects oversized entries before writing, so a single run cannot produce
+unreadable segments. However, **shrinking `max_payload_size` between
+restarts is not supported**: pre-existing segments may contain entries
+larger than the new buffer capacity, and the read-side check rejects them
+as malformed (the segment's read terminates early, mirroring the
+"subtle index corruption" failure mode in [Recovery](#recovery)). Operators
+must only increase `max_payload_size`, or drain/delete affected channels
+before reducing it.
 
 `NID_MAX_LENGTH` (510 bytes) is derived from the protocol's maximum NID size:
 `USERNAME_MAX_LENGTH` (256) + 1 (`@`) + `DOMAIN_MAX_LENGTH` (253).
@@ -464,15 +512,17 @@ struct EntryReader {
 ┌──────────────────────────────────────────────────────────────┐
 │  For each entry at position `pos`:                           │
 │                                                              │
-│  1. read_exact_at(header, pos)          ← 22-byte header     │
+│  1. read_exact_at(header, pos)          ← ENTRY_HEADER_SIZE  │
 │     Parse seq, timestamp, from_len, payload_len              │
 │                                                              │
-│  2. read_exact_at(body[..body_size], pos + 22)               │
+│  2. read_exact_at(body[..body_size], pos + ENTRY_HEADER_SIZE)│
 │     Uses IoBuf::slice(..body_size) to read exactly           │
-│     from_len + payload_len + 4 bytes into the pre-allocated  │
-│     body buffer without touching remaining capacity          │
+│     from_len + payload_len + CRC_SIZE bytes into the         │
+│     pre-allocated body buffer without touching the remaining │
+│     capacity                                                 │
 │                                                              │
-│  3. Verify CRC32 over header + body                          │
+│  3. Verify CRC32 over header + from + payload, comparing     │
+│     against the trailing 4 bytes of the body buffer          │
 │                                                              │
 │  4. If seq >= from_seq:                                      │
 │     visitor.visit(LogEntry { seq, from, payload }).await     │
@@ -501,7 +551,7 @@ After each append:
 │
 ├─ If max_persist_messages == 0 → skip eviction (no retention limit)
 ├─ Compute logical first_seq = last_seq - max_persist_messages + 1
-├─ For each segment (oldest first):
+├─ For each sealed segment (oldest first; the active segment is never evicted):
 │   └─ Is segment's last_seq < logical first_seq?
 │       ├─ Yes → delete .log + .idx, update in-memory segment list
 │       └─ No  → stop (all remaining segments have retained messages)
@@ -543,7 +593,12 @@ start of recovery and reused across all segments to avoid per-segment allocation
    (std::fs::read_dir — no compio equivalent)
 
 2. For each sealed segment (all except the last):
-   ├─ Scan .log with EntryReader (CRC validation) to determine last_seq
+   ├─ Zero-byte .log → delete .log + .idx and skip to the next segment.
+   ├─ Scan .log end-to-end with EntryReader (CRC validation) to determine last_seq.
+   │   This is a full-segment linear scan — recovery cost is therefore O(total
+   │   sealed bytes) per channel. The `.idx`'s last entry could be used to
+   │   bound the scan to roughly `INDEX_INTERVAL_BYTES + max_entry_size`
+   │   bytes, but the current implementation does not exploit this.
    │   Segments with zero valid entries are deleted.
    ├─ .idx looks valid? → memory-map read-only (Mmap)
    └─ .idx missing or visibly corrupt? → rebuild by scanning .log with
@@ -581,22 +636,35 @@ start of recovery and reused across all segments to avoid per-segment allocation
    is to delete the `.idx` so it gets rebuilt on next startup.
 
 3. For the active (last) segment:
+   ├─ Zero-byte .log → delete .log + .idx; mark the active slot as
+   │   unrecovered (see step 4) and skip the rest of step 3.
    ├─ Scan forward with EntryReader, validating CRC32 per entry
    ├─ Truncate at the first invalid/partial entry (file.set_len().await)
    ├─ If the scan yielded zero valid entries → delete `.log` + `.idx` and
-   │   skip the open-for-append step below. The next `append()` falls
-   │   through `Inner::create_segment` and creates a fresh segment named
-   │   after that entry's seq. Sealed segments are unaffected.
+   │   mark the active slot as unrecovered (see step 4). The next `append()`
+   │   falls through `Inner::create_segment` and creates a fresh segment
+   │   named after that entry's seq. Sealed segments are unaffected.
    ├─ Otherwise:
    │   ├─ Rebuild .idx from valid entries (reusing index buffer)
    │   ├─ Compute bytes_since_index: read the last index entry to find its offset,
    │   │   scan forward from there to count bytes written after it, so the index
    │   │   interval resumes correctly on the next append
-   │   ├─ Open .log for writes (positioned I/O at seg.file_size)
-   │   ├─ Extend .idx to pre-allocated capacity
-   │   └─ Memory-map read-write (MmapMut), set write_pos to actual index size
 
-4. Empty/zero-byte .log files → delete (compio::fs::remove_file().await)
+4. Open the active segment for appending **only if** step 3 actually recovered
+   a non-empty active segment (`active_segment_recovered = true`). When step 3
+   discarded the last segment (zero-byte or zero valid entries), we must NOT
+   promote the preceding sealed segment to active — that would open a sealed
+   `.log` for writes and double-map its `.idx` (read-only + writable) to the
+   same file. In that case `active_log` stays `None` and the next `append()`
+   creates a fresh active segment via `Inner::create_segment`. When recovery
+   does proceed:
+   ├─ Open .log for writes (positioned I/O at seg.file_size)
+   ├─ Extend .idx to pre-allocated capacity
+   └─ Memory-map read-write (MmapMut), set write_pos to actual index size
+
+   Failures in this step are **fatal** for the channel (bubbled to the
+   caller): a half-recovered active segment that cannot accept index updates
+   would silently corrupt subsequent reads.
 
 5. Derive in-memory state:
    ├─ last_seq  → from last valid entry of newest segment
