@@ -268,6 +268,13 @@ zero-filled pre-allocated tail.
 pub trait MessageLog: 'static {
     /// Append a message and its payload to the log.
     /// When message count exceeds `max_messages`, oldest segments are evicted.
+    ///
+    /// **Caller-contract validation:** `append` rejects (with `Err`) any
+    /// message whose `seq` is `0` (the empty-log sentinel) or `<= last_seq()`
+    /// (non-strictly-monotonic). These cases would silently corrupt the
+    /// log's in-memory `first_seq`/`last_seq` tracking and the sparse
+    /// index's monotonicity invariant respectively, so they are surfaced
+    /// loudly rather than persisted.
     async fn append(
         &self,
         message: &Message,

@@ -978,6 +978,28 @@ impl MessageLog for FileMessageLog {
     let from = params.from.as_ref().as_bytes();
     let payload_bytes = payload.as_slice();
 
+    // Reject `seq == 0` and non-strictly-monotonic sequences before any state
+    // change. `0` is the empty-log sentinel returned by `first_seq`/`last_seq`,
+    // so writing an entry with `seq == 0` would persist data while leaving
+    // both cached values at 0 — the log would appear empty afterwards. A
+    // `seq <= cached_last_seq` would corrupt the sparse index, whose binary
+    // search assumes strictly monotonic `relative_seq` per segment; a
+    // subsequent recovery would mark the index as visibly corrupt and rebuild
+    // it from the same broken log on every startup.
+    //
+    // These are caller-contract violations rather than expected runtime
+    // states, so we surface them loudly instead of silently corrupting on
+    // disk.
+    if seq == 0 {
+      anyhow::bail!("seq must be > 0 (0 is reserved as the empty-log sentinel)");
+    }
+    if seq <= inner.cached_last_seq {
+      anyhow::bail!(
+        "seq must be strictly greater than last_seq: got {seq}, last_seq is {}",
+        inner.cached_last_seq
+      );
+    }
+
     // Reject oversized entries before any state change. The read-side
     // `EntryReader::body` buffer is sized for `NID_MAX_LENGTH + max_payload_size
     // + CRC_SIZE`; anything larger would be unreadable on recovery and the
@@ -1661,6 +1683,50 @@ mod tests {
     assert_eq!(log.last_seq(), 0);
     append_message(&log, 1, "alice@localhost", b"data", 100).await;
     assert_eq!(log.last_seq(), 1);
+  }
+
+  #[compio::test]
+  async fn test_append_rejects_zero_seq() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = create_log(tmp.path()).await;
+
+    let msg = make_message("alice@localhost", "!test@localhost", 0, 1000, 4);
+    let pool_buf = make_payload(b"data").await;
+    let err = log.append(&msg, &pool_buf, 100).await.unwrap_err();
+    assert!(err.to_string().contains("seq must be > 0"), "unexpected error: {err}");
+
+    // Log state is unchanged: still empty, so a fresh append at seq=1 works.
+    assert_eq!(log.first_seq(), 0);
+    assert_eq!(log.last_seq(), 0);
+    append_message(&log, 1, "alice@localhost", b"data", 100).await;
+    assert_eq!(log.last_seq(), 1);
+  }
+
+  #[compio::test]
+  async fn test_append_rejects_non_monotonic_seq() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = create_log(tmp.path()).await;
+
+    append_message(&log, 5, "alice@localhost", b"first", 100).await;
+
+    // Same seq.
+    let dup = make_message("alice@localhost", "!test@localhost", 5, 1000, 4);
+    let buf = make_payload(b"dup!").await;
+    let err = log.append(&dup, &buf, 100).await.unwrap_err();
+    assert!(err.to_string().contains("strictly greater than last_seq"), "unexpected error: {err}");
+
+    // Lower seq.
+    let lower = make_message("alice@localhost", "!test@localhost", 3, 1000, 4);
+    let buf = make_payload(b"low!").await;
+    let err = log.append(&lower, &buf, 100).await.unwrap_err();
+    assert!(err.to_string().contains("strictly greater than last_seq"), "unexpected error: {err}");
+
+    // last_seq unchanged.
+    assert_eq!(log.last_seq(), 5);
+
+    // Higher seq still works.
+    append_message(&log, 6, "alice@localhost", b"next", 100).await;
+    assert_eq!(log.last_seq(), 6);
   }
 
   #[compio::test]
