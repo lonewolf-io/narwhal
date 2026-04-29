@@ -357,10 +357,28 @@ to the transmitter, channel name, `history_id`, and the payload pool:
 │                                                            │
 │  For each LogEntry:                                        │
 │    1. Construct Message::Message { history_id, ... }       │
-│    2. Copy payload into PoolBuffer (no heap alloc)         │
+│       — decodes `from` as UTF-8 to a StringAtom and        │
+│         clones channel/history_id atoms                    │
+│    2. Copy payload into a pooled buffer via                │
+│       `Pool::acquire_buffer` — no heap allocation on the   │
+│       payload path                                         │
 │    3. Call transmitter.send_message_with_payload()         │
 └────────────────────────────────────────────────────────────┘
 ```
+
+The "no heap allocation" guarantee applies to the **payload** path — the
+`PoolBuffer` is recycled across reads. The frame header path still allocates
+small `StringAtom`s (decoding `from`, cloning `channel` and `history_id`) per
+entry; those allocations are intentional and bounded.
+
+If `entry.from` contains bytes that are not valid UTF-8 (only possible if a
+corrupt entry passes CRC validation, e.g. across a binary-format change),
+`std::str::from_utf8` returns an error. The visitor propagates it, `read()`
+returns `Err`, and `ChannelShard::history()` exits *before* sending
+`HistoryAck` — the client receives no `HISTORY_ACK` for that request and must
+treat the in-flight `MESSAGE` frames already received as the truncated
+result. Operators should treat repeated UTF-8 decode errors as a signal of
+on-disk corruption.
 
 ### MessageLogFactory
 
@@ -437,13 +455,14 @@ After write completes:
 │   ├─ No  → done
 │   └─ Yes → roll:
 │       1. Close active .log file handle
-│       2. sync_all() active .idx file
+│       2. sync_all() active .idx file (flushes MmapMut-dirtied pages)
 │       3. Drop active .idx MmapMut
 │       4. Truncate .idx from pre-allocated size to actual written size
-│       5. Re-open .idx as read-only Mmap (now a sealed segment)
-│       6. Create new .log file (named after next seq to be written)
-│       7. Pre-allocate new .idx to max capacity and MmapMut it
-│       8. New segment becomes the active segment
+│       5. sync_all() active .idx file again so the truncation itself is durable
+│       6. Re-open .idx as read-only Mmap (now a sealed segment)
+│       7. Create new .log file (named after next seq to be written)
+│       8. Pre-allocate new .idx to max capacity and MmapMut it
+│       9. New segment becomes the active segment
 ```
 
 ## Read Path
@@ -457,7 +476,10 @@ To read from `from_seq`:
    whose first_seq <= from_seq
 
 2. Binary search the segment's .idx for the largest
-   relative_seq <= (from_seq - segment_base_seq)
+   relative_seq <= (from_seq - segment_base_seq).
+   If no such entry exists (empty or malformed index, which the entry-0
+   rule normally prevents), fall back to offset 0 — correctness is
+   preserved at the cost of a full-segment scan.
 
 3. Start positioned reads at the offset from the index entry
 
@@ -549,8 +571,10 @@ Eviction is **count-based**, driven by `max_persist_messages`.
 ```
 After each append:
 │
-├─ If max_persist_messages == 0 → skip eviction (no retention limit)
+├─ If max_persist_messages == 0 OR the log is empty → skip eviction
+│   (no retention limit, or nothing to retain)
 ├─ Compute logical first_seq = last_seq - max_persist_messages + 1
+│   (saturating at 0 when max_persist_messages > last_seq)
 ├─ For each sealed segment (oldest first; the active segment is never evicted):
 │   └─ Is segment's last_seq < logical first_seq?
 │       ├─ Yes → delete .log + .idx, update in-memory segment list
@@ -688,10 +712,10 @@ Client                        Server (ChannelShard)
   │  history_id=h1 from_seq=50    │
   │  limit=10                     │
   │──────────────────────────────►│
+  │                               ├─ Clamp limit to max_history_limit
+  │                               │
   │                               ├─ Validate: local domain, channel exists,
   │                               │   membership, read ACL, persistence enabled
-  │                               │
-  │                               ├─ Clamp limit to max_history_limit
   │                               │
   │                               ├─ message_log.read(from_seq, limit, &mut visitor)
   │                               │     │
