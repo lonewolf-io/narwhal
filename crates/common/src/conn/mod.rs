@@ -864,8 +864,7 @@ impl<D: Dispatcher> Conn<D> {
 
         // Wait for PONG or timeout, with cancellation
         let pong_rx_recv = pong_rx.clone();
-        let timeout_fut =
-          compio::runtime::time::timeout(heartbeat_timeout, async move { pong_rx_recv.recv().await });
+        let timeout_fut = compio::runtime::time::timeout(heartbeat_timeout, async move { pong_rx_recv.recv().await });
         let mut timeout_fut = std::pin::pin!(timeout_fut.fuse());
         futures::select! {
           result = timeout_fut => {

@@ -467,8 +467,8 @@ fn create_unix_listener(socket_path: &str) -> anyhow::Result<compio::net::UnixLi
     .map_err(|e| anyhow!("failed to bind to Unix socket {}: {}", socket_path, e))?;
   std_listener.set_nonblocking(true)?;
 
-  let listener = compio::net::UnixListener::from_std(std_listener)
-    .map_err(|e| anyhow!("failed to wrap Unix listener: {}", e))?;
+  let listener =
+    compio::net::UnixListener::from_std(std_listener).map_err(|e| anyhow!("failed to wrap Unix listener: {}", e))?;
 
   Ok(listener)
 }
