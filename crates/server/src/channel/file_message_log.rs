@@ -55,6 +55,13 @@ pub struct MessageLogMetrics {
   segments_evicted: Counter,
   evicted_bytes: Counter,
   crc_failures: Counter,
+  /// Incremented once per sealed segment whose CRC scan terminates before
+  /// the file's actual end during recovery. Indicates bit rot or other
+  /// mid-segment data corruption: the segment's `last_seq` is set to the
+  /// last valid entry, and any valid entries past the corruption boundary
+  /// are silently invisible to subsequent reads. Operators should treat a
+  /// non-zero value as a signal to investigate disk health.
+  sealed_segment_truncations: Counter,
 }
 
 impl std::fmt::Debug for MessageLogMetrics {
@@ -92,6 +99,12 @@ impl MessageLogMetrics {
       "Message log entries rejected due to CRC mismatch",
       crc_failures.clone(),
     );
+    let sealed_segment_truncations = Counter::default();
+    registry.register(
+      "message_log_sealed_segment_truncations",
+      "Sealed segments whose CRC scan terminated before EOF on recovery (likely bit rot or mid-segment corruption)",
+      sealed_segment_truncations.clone(),
+    );
 
     Self {
       recovery_duration_seconds,
@@ -100,6 +113,7 @@ impl MessageLogMetrics {
       segments_evicted,
       evicted_bytes,
       crc_failures,
+      sealed_segment_truncations,
     }
   }
 
@@ -117,6 +131,7 @@ impl MessageLogMetrics {
       segments_evicted: Counter::default(),
       evicted_bytes: Counter::default(),
       crc_failures: Counter::default(),
+      sealed_segment_truncations: Counter::default(),
     }
   }
 }
@@ -440,18 +455,41 @@ impl Inner {
         // Determine bytes_since_index for resuming appends.
         self.bytes_since_index = Self::compute_bytes_since_last_index(&idx_path, valid_size).await;
       } else {
-        // Sealed segment: rebuild the index if missing or visibly corrupt.
-        let last_seq = Self::scan_last_seq(&log_path, base_seq, &mut self.reader).await;
+        // Sealed segment: validate, rebuild the index if missing or visibly corrupt.
+        let (last_seq, valid_size) = Self::scan_and_validate(&log_path, base_seq, &mut self.reader).await;
         if last_seq == 0 {
           let _ = compio::fs::remove_file(&log_path).await;
           let _ = compio::fs::remove_file(&idx_path).await;
           continue;
         }
-        if !Self::looks_like_valid_index(&idx_path, file_size, self.idx_capacity()).await {
+        // The validation scan terminated before EOF on a sealed segment.
+        // This can mean a CRC mismatch, an unreadable header, oversized
+        // declared lengths, a truncated tail, or an I/O error — any of
+        // which is silent data loss: the .log still holds the trailing
+        // bytes, but `last_seq` is pinned to the last validated position
+        // and reads stop there. Surface this to operators via a metric +
+        // warn log so disk health can be investigated rather than
+        // discovered later via missing history. The `crc_failures`
+        // counter narrows the root cause to CRC mismatches specifically.
+        if valid_size < file_size {
+          self.metrics.sealed_segment_truncations.inc();
+          tracing::warn!(
+            path = %log_path.display(),
+            file_size,
+            valid_size,
+            last_valid_seq = last_seq,
+            lost_bytes = file_size - valid_size,
+            "sealed message-log segment validation scan terminated before EOF; entries past the failure are unreachable"
+          );
+        }
+        if !Self::looks_like_valid_index(&idx_path, valid_size, self.idx_capacity()).await {
           Self::rebuild_index(&log_path, &idx_path, base_seq, &mut self.reader, &mut idx_buf).await;
         }
         let idx_mmap = Self::mmap_index(&idx_path).await;
-        self.segments.push(SegmentInfo { first_seq: base_seq, last_seq, file_size, idx_mmap });
+        // Use `valid_size` rather than the on-disk `file_size` so subsequent
+        // reads stop at the last validated entry and never attempt to
+        // decode bytes past the validation boundary.
+        self.segments.push(SegmentInfo { first_seq: base_seq, last_seq, file_size: valid_size, idx_mmap });
       }
     }
 
@@ -707,12 +745,6 @@ impl Inner {
     (last_seq, pos)
   }
 
-  /// Scan a sealed segment to find its last seq (fast path: trust CRC).
-  async fn scan_last_seq(log_path: &Path, base_seq: u64, reader: &mut EntryReader) -> u64 {
-    let (last_seq, _) = Self::scan_and_validate(log_path, base_seq, reader).await;
-    last_seq
-  }
-
   /// Rebuild the .idx file by scanning the .log file.
   ///
   /// The buffer is built in-memory, written to a temp sibling
@@ -910,12 +942,24 @@ impl Inner {
     // segment to append into.
     while self.segments.len() > 1 {
       if self.segments[0].last_seq < retain_from {
-        // Drop the segment (and its mmap) before deleting the underlying files.
         let removed = self.segments.remove(0);
+        let log_path = self.segment_log_path(removed.first_seq);
+        let idx_path = self.segment_idx_path(removed.first_seq);
+        // Use the on-disk file size for the evicted-bytes metric so that
+        // truncated sealed segments (where `removed.file_size == valid_size`,
+        // smaller than the physical file) still report the actual disk space
+        // reclaimed. Fall back to `removed.file_size` if stat fails.
+        let fallback_size = removed.file_size;
+        let physical_size = compio::fs::metadata(&log_path).await.map(|m| m.len()).unwrap_or(fallback_size);
         self.metrics.segments_evicted.inc();
-        self.metrics.evicted_bytes.inc_by(removed.file_size);
-        let _ = compio::fs::remove_file(self.segment_log_path(removed.first_seq)).await;
-        let _ = compio::fs::remove_file(self.segment_idx_path(removed.first_seq)).await;
+        self.metrics.evicted_bytes.inc_by(physical_size);
+        // Explicitly drop the segment (and its idx mmap) before unlinking
+        // the underlying files. Linux is fine with unlinking a mapped file,
+        // but releasing the mapping first keeps the eviction safe on
+        // platforms where unlink fails while a mapping is alive.
+        drop(removed);
+        let _ = compio::fs::remove_file(log_path).await;
+        let _ = compio::fs::remove_file(idx_path).await;
       } else {
         break;
       }
@@ -1323,16 +1367,21 @@ mod tests {
 
   /// Helper: create a FileMessageLog with a custom segment size threshold.
   async fn create_log_with_segment_max(dir: &std::path::Path, segment_max_bytes: u64) -> FileMessageLog {
+    create_log_with_segment_max_and_metrics(dir, segment_max_bytes, MessageLogMetrics::noop()).await
+  }
+
+  /// Helper: create a FileMessageLog with a custom segment size threshold and a
+  /// caller-supplied metrics struct, so tests can observe metric increments.
+  async fn create_log_with_segment_max_and_metrics(
+    dir: &std::path::Path,
+    segment_max_bytes: u64,
+    metrics: MessageLogMetrics,
+  ) -> FileMessageLog {
     let hash = channel_hash(&StringAtom::from("test_channel"));
     let channel_dir = dir.join(hash.as_ref());
-    FileMessageLog::open_with_segment_max(
-      channel_dir,
-      TEST_MAX_PAYLOAD_SIZE,
-      segment_max_bytes,
-      MessageLogMetrics::noop(),
-    )
-    .await
-    .expect("recovery should succeed in tests")
+    FileMessageLog::open_with_segment_max(channel_dir, TEST_MAX_PAYLOAD_SIZE, segment_max_bytes, metrics)
+      .await
+      .expect("recovery should succeed in tests")
   }
 
   /// Helper: append a single message with the given seq, from, and payload.
@@ -1954,6 +2003,83 @@ mod tests {
       assert_eq!(count, 5);
       assert_eq!(visitor.entries[4].seq, 5);
       assert_eq!(visitor.entries[4].payload, b"complete");
+    }
+  }
+
+  #[compio::test]
+  async fn test_recovery_increments_metric_on_sealed_segment_corruption() {
+    // Regression test: a CRC failure mid-way through a sealed segment is
+    // silent data loss — the bytes past the failure are unreachable but the
+    // file stays on disk. Recovery must surface this as both a metric
+    // increment and a tracing warning so disk health can be investigated.
+    //
+    // The test uses a small `segment_max_bytes` to roll into a sealed
+    // segment quickly, corrupts a byte in the middle of that sealed
+    // segment's `.log`, then re-opens with a shared metrics handle and
+    // asserts the truncation counter advanced and `last_seq` stops at the
+    // pre-corruption entry.
+    let tmp = tempfile::tempdir().unwrap();
+    let metrics = MessageLogMetrics::noop();
+
+    let appended = 8u64;
+    {
+      let log = create_log_with_segment_max_and_metrics(tmp.path(), 4096, metrics.clone()).await;
+      for seq in 1..=appended {
+        // ~1054-byte entries → roll fires after ~4 entries so segment 1 ends
+        // up sealed with multiple entries we can corrupt mid-file.
+        append_message(&log, seq, "alice@localhost", &vec![0u8; 1024], 10_000).await;
+      }
+      log.flush().await.unwrap();
+    }
+
+    // The shared truncation counter is incremented during recovery when a
+    // sealed segment is truncated. The first recovery saw clean segments,
+    // so it must still be zero here.
+    assert_eq!(metrics.sealed_segment_truncations.get(), 0);
+
+    let channel_dir = {
+      let hash = channel_hash(&StringAtom::from("test_channel"));
+      tmp.path().join(hash.as_ref())
+    };
+
+    // Find sealed segments (every .log except the newest).
+    let mut log_files: Vec<_> = std::fs::read_dir(&channel_dir)
+      .unwrap()
+      .filter_map(|e| e.ok())
+      .filter(|e| e.path().extension().is_some_and(|ext| ext == "log"))
+      .collect();
+    log_files.sort_by_key(|e| e.file_name());
+    assert!(log_files.len() >= 2, "test setup expected at least one sealed segment + one active");
+
+    // Flip a byte deep inside the first sealed segment so the CRC of an
+    // entry in the middle of the file fails. The file's tail bytes are
+    // still bit-perfect on disk, so recovery's mid-segment scan will stop
+    // before EOF.
+    let sealed_path = log_files[0].path();
+    let sealed_size = std::fs::metadata(&sealed_path).unwrap().len();
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = std::fs::OpenOptions::new().write(true).read(true).open(&sealed_path).unwrap();
+    f.seek(SeekFrom::Start(sealed_size / 2)).unwrap();
+    f.write_all(&[0xFF]).unwrap();
+    f.sync_all().unwrap();
+
+    {
+      let log = create_log_with_segment_max_and_metrics(tmp.path(), 4096, metrics.clone()).await;
+      // Recovery should have detected the truncation on the sealed segment.
+      assert_eq!(metrics.sealed_segment_truncations.get(), 1, "expected one sealed-segment truncation to be recorded");
+
+      // Reads of the corrupted segment terminate at the last validated
+      // entry, so a sweep over the full range returns fewer entries than
+      // were originally appended. The active segment is untouched, so its
+      // entries remain visible — `last_seq()` reports the highest seq, but
+      // the *count* visited is short by the entries lost past the
+      // corruption boundary.
+      let mut visitor = CollectingVisitor::new();
+      let visited = log.read(1, 1_000, &mut visitor).await.unwrap();
+      assert!(
+        (visited as u64) < appended,
+        "visited ({visited}) should be fewer than appended ({appended}) after sealed corruption"
+      );
     }
   }
 
