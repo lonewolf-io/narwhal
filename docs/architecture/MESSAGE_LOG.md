@@ -311,7 +311,9 @@ pub trait MessageLog: 'static {
         from_seq: u64,
         limit: u32,
         visitor: &mut impl LogVisitor,
-    ) -> anyhow::Result<u32>;
+    ) -> anyhow::Result<u32>
+    where
+        Self: Sized;
 }
 ```
 
@@ -386,15 +388,18 @@ on-disk corruption.
 #[async_trait(?Send)]
 pub trait MessageLogFactory: Clone + Send + Sync + 'static {
     type Log: MessageLog;
-    async fn create(&self, handler: &StringAtom) -> Self::Log;
+    async fn create(&self, handler: &StringAtom) -> anyhow::Result<Self::Log>;
 }
 ```
 
 The factory holds `base_dir` and `max_payload_size` at construction time.
 `create()` is async because it performs recovery (scanning segment files,
-validating CRC checksums, rebuilding indexes) using `compio::fs` I/O. It
-derives the channel directory using the shared SHA-256 path utility (same as
-`FileChannelStore`).
+validating CRC checksums, rebuilding indexes) using `compio::fs` I/O — and
+it returns `anyhow::Result<Self::Log>` because that recovery may fail (e.g.
+unable to open the active segment for writes or memory-map its index, see
+[Recovery](#recovery)). On `Err`, callers refuse to bring the affected
+channel online; other channels keep running. It derives the channel
+directory using the shared SHA-256 path utility (same as `FileChannelStore`).
 
 ## Write Path
 
@@ -786,20 +791,27 @@ no concurrent read/write access to a channel's message log.
 
 ## Testing
 
-Integration tests live in `crates/server/tests/c2s_channel_persistence.rs`.
+Tests are split between **unit tests** (low-level log mechanics, including
+CRC validation and recovery) inline in `crates/server/src/channel/file_message_log.rs`
+and **integration tests** (end-to-end client/server flows like HISTORY round-trip
+and survives_restart) in `crates/server/tests/c2s_channel_persistence.rs` and
+`crates/server/tests/c2s_channel_persistence_failure.rs`.
 
-**Test categories:**
+**Test categories and where they live:**
 
-| Category | What it verifies |
-|----------|-----------------|
-| Append + read | Single entry, multiple entries, round-trip correctness |
-| Sparse index | Binary search finds the correct offset |
-| Segment roll | Cross-segment reads return continuous data |
-| Eviction | Segment deletion when all messages fall outside retention |
-| Seq tracking | `first_seq` / `last_seq` correctness through append and eviction |
-| CRC validation | Corrupt entries detected, partial writes rejected |
-| Recovery | Truncation at corrupt tail, index rebuild from log |
-| Edge cases | Empty log, `from_seq` beyond `last_seq`, single-entry segments |
+| Category | Layer | What it verifies |
+|----------|-------|-----------------|
+| Append + read | unit | Single entry, multiple entries, round-trip correctness |
+| Sparse index | unit | Binary search finds the correct offset |
+| Segment roll | unit | Cross-segment reads return continuous data |
+| Eviction | unit | Segment deletion when all messages fall outside retention |
+| Seq tracking | unit + integration | `first_seq` / `last_seq` correctness through append, eviction, restart |
+| CRC validation | unit | Corrupt entries detected, partial writes rejected |
+| Recovery | unit | Truncation at corrupt tail, index rebuild from log, sealed-segment-not-promoted invariant |
+| Edge cases | unit | Empty log, `from_seq` beyond `last_seq`, single-entry segments, oversized append rejection |
+| HISTORY / CHAN_SEQ | integration | Wire-level round-trip including ACK frames |
+| Persistence toggling | integration | Turning persistence on/off mid-channel |
+| Append failure paths | integration | Broadcast/JOIN/SET_ACL/SET_CONFIG/LEAVE behavior when the store or message log fails |
 
 Tests use `tempfile::TempDir` for isolated file system state.
 
@@ -810,8 +822,9 @@ manager logic independently of persistence.
 
 | File | Purpose |
 |------|---------|
-| `crates/server/src/channel/file_message_log.rs` | `FileMessageLog` implementation |
-| `crates/server/src/channel/store.rs` | `MessageLog` and `MessageLogFactory` trait definitions |
+| `crates/server/src/channel/file_message_log.rs` | `FileMessageLog` implementation and unit tests |
+| `crates/server/src/channel/store.rs` | `MessageLog` and `MessageLogFactory` trait definitions; `NoopMessageLog` |
 | `crates/server/src/channel/file_store.rs` | `FileChannelStore` (shares path utility) |
-| `crates/server/src/channel/manager.rs` | `ChannelShard::history()` and `channel_seq()` integration |
-| `crates/server/tests/c2s_channel_persistence.rs` | Integration tests |
+| `crates/server/src/channel/manager.rs` | `ChannelShard::history()` and `channel_seq()` integration; `HistoryVisitor` |
+| `crates/server/tests/c2s_channel_persistence.rs` | Integration tests (HISTORY/CHAN_SEQ wire flows, restart) |
+| `crates/server/tests/c2s_channel_persistence_failure.rs` | Integration tests for store/append failure paths |
