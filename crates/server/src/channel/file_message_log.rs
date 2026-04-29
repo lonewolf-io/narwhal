@@ -368,6 +368,11 @@ impl FileMessageLog {
     result?;
     Ok(FileMessageLog { inner: RefCell::new(inner) })
   }
+
+  #[cfg(test)]
+  fn bytes_since_index(&self) -> u64 {
+    self.inner.borrow().bytes_since_index
+  }
 }
 
 // === impl Inner ===
@@ -433,8 +438,7 @@ impl Inner {
         }
 
         // Determine bytes_since_index for resuming appends.
-        self.bytes_since_index =
-          Self::compute_bytes_since_last_index(&log_path, &idx_path, valid_size, &mut self.reader).await;
+        self.bytes_since_index = Self::compute_bytes_since_last_index(&idx_path, valid_size).await;
       } else {
         // Sealed segment: rebuild the index if missing or visibly corrupt.
         let last_seq = Self::scan_last_seq(&log_path, base_seq, &mut self.reader).await;
@@ -582,49 +586,45 @@ impl Inner {
     prev_offset.saturating_add(ENTRY_HEADER_SIZE as u64) <= log_file_size
   }
 
-  /// Compute bytes written since the last index entry for the active segment.
-  async fn compute_bytes_since_last_index(
-    log_path: &Path,
-    idx_path: &Path,
-    valid_size: u64,
-    reader: &mut EntryReader,
-  ) -> u64 {
+  /// Compute bytes written since the last index entry for the active segment,
+  /// to seed `bytes_since_index` on recovery.
+  ///
+  /// The runtime invariant after each `append` is
+  /// `bytes_since_index = file_size - last_index_offset`: when an index entry
+  /// is written, `bytes_since_index` is reset to 0 and the just-appended
+  /// entry's length is then added back; subsequent non-indexing appends keep
+  /// adding their lengths. So the value at any moment is the total bytes
+  /// from the last index entry (inclusive of the entry it points at) up to
+  /// the end of the log.
+  ///
+  /// We mirror that invariant directly by subtracting the offset of the last
+  /// index entry from `valid_size`, instead of scanning the log forward —
+  /// which is both faster and avoids an off-by-one bug the scan-based
+  /// version had (it skipped the indexed entry's own length, leaving the
+  /// next index entry delayed by up to one entry's worth of bytes after
+  /// every restart).
+  async fn compute_bytes_since_last_index(idx_path: &Path, valid_size: u64) -> u64 {
     if valid_size == 0 {
       return 0;
     }
-    // Read the last index entry to find the offset it covers.
-    if let Ok(idx_data) = compio::fs::read(idx_path).await {
-      let entry_count = idx_data.len() / INDEX_ENTRY_SIZE;
-      if entry_count > 0 {
-        let last_entry_offset = (entry_count - 1) * INDEX_ENTRY_SIZE + 4; // skip relative_seq
-        if last_entry_offset + 8 <= idx_data.len() {
-          let offset = u64::from_le_bytes(idx_data[last_entry_offset..last_entry_offset + 8].try_into().unwrap());
-          // Scan from that offset to compute bytes written after it.
-          if let Ok(file) = compio::fs::File::open(log_path).await {
-            let mut bytes_after = 0u64;
-            let mut pos = offset;
-            let mut first_entry = true;
-            while pos < valid_size {
-              let remaining = valid_size - pos;
-              if !reader.read_at(&file, pos, remaining).await {
-                break;
-              }
-              if first_entry {
-                // The indexed entry itself — skip it but count bytes after.
-                first_entry = false;
-                pos += reader.entry_size;
-                continue;
-              }
-              bytes_after += reader.entry_size;
-              pos += reader.entry_size;
-            }
-            return bytes_after;
-          }
-        }
-      }
+    let Ok(idx_data) = compio::fs::read(idx_path).await else {
+      // Index missing or unreadable — treat the whole valid range as
+      // un-indexed so the next append re-establishes an entry-0.
+      return valid_size;
+    };
+    let entry_count = idx_data.len() / INDEX_ENTRY_SIZE;
+    if entry_count == 0 {
+      return valid_size;
     }
-    // No index entries — all bytes count.
-    valid_size
+    let off_pos = (entry_count - 1) * INDEX_ENTRY_SIZE + 4; // skip relative_seq
+    if off_pos + 8 > idx_data.len() {
+      return valid_size;
+    }
+    let last_index_offset = u64::from_le_bytes(idx_data[off_pos..off_pos + 8].try_into().unwrap());
+    // A pathological index pointing past the validated log tail shouldn't
+    // happen after a fresh `rebuild_index` on the same `valid_size`, but
+    // saturate defensively rather than underflow.
+    valid_size.saturating_sub(last_index_offset)
   }
 
   /// Maximum pre-allocated size for an index file, in bytes.
@@ -1801,6 +1801,45 @@ mod tests {
       assert_eq!(visitor.entries[9].seq, 10);
       assert_eq!(visitor.entries[0].payload, b"persistent");
     }
+  }
+
+  #[compio::test]
+  async fn test_recovery_preserves_bytes_since_index_invariant() {
+    // Regression test: `bytes_since_index` after recovery must equal the
+    // value the runtime had pre-shutdown. Specifically, the runtime
+    // invariant is `file_size - last_index_offset` (the indexed entry's
+    // own length is included in the count). An earlier scan-based
+    // implementation skipped the indexed entry's length, leaving the next
+    // index entry delayed by up to one entry's worth of bytes after every
+    // restart.
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Append a handful of varied-size entries. None of them is large
+    // enough to trigger a second index entry on its own, so the active
+    // segment ends with a single index entry at offset 0 and
+    // `bytes_since_index` equal to the full validated log size.
+    let runtime_value = {
+      let log = create_log(tmp.path()).await;
+      append_message(&log, 1, "alice@localhost", &[0u8; 1000], 0).await;
+      append_message(&log, 2, "alice@localhost", &[0u8; 1500], 0).await;
+      append_message(&log, 3, "alice@localhost", &[0u8; 800], 0).await;
+      log.flush().await.unwrap();
+      log.bytes_since_index()
+    };
+
+    // With a single index entry at offset 0, the runtime invariant is
+    // exactly the validated log size.
+    assert!(runtime_value > 0, "runtime bytes_since_index should be non-zero after appends");
+
+    let recovered = {
+      let log = create_log(tmp.path()).await;
+      log.bytes_since_index()
+    };
+
+    assert_eq!(
+      recovered, runtime_value,
+      "recovered bytes_since_index ({recovered}) must match the runtime invariant ({runtime_value})"
+    );
   }
 
   #[compio::test]

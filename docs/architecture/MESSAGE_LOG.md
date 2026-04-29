@@ -646,9 +646,12 @@ start of recovery and reused across all segments to avoid per-segment allocation
    │   named after that entry's seq. Sealed segments are unaffected.
    ├─ Otherwise:
    │   ├─ Rebuild .idx from valid entries (reusing index buffer)
-   │   ├─ Compute bytes_since_index: read the last index entry to find its offset,
-   │   │   scan forward from there to count bytes written after it, so the index
-   │   │   interval resumes correctly on the next append
+   │   ├─ Compute bytes_since_index = `valid_size - last_index_offset` (read
+   │   │   the last entry from the freshly rebuilt `.idx`). The runtime
+   │   │   invariant after each append is that `bytes_since_index` equals
+   │   │   the byte distance from the last index entry to the end of the
+   │   │   log (inclusive of the indexed entry's own length); mirroring it
+   │   │   directly avoids an off-by-one drift across restarts
 
 4. Open the active segment for appending **only if** step 3 actually recovered
    a non-empty active segment (`active_segment_recovered = true`). When step 3
