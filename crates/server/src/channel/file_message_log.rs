@@ -935,7 +935,6 @@ impl Inner {
     // segment to append into.
     while self.segments.len() > 1 {
       if self.segments[0].last_seq < retain_from {
-        // Drop the segment (and its mmap) before deleting the underlying files.
         let removed = self.segments.remove(0);
         let log_path = self.segment_log_path(removed.first_seq);
         let idx_path = self.segment_idx_path(removed.first_seq);
@@ -943,9 +942,15 @@ impl Inner {
         // truncated sealed segments (where `removed.file_size == valid_size`,
         // smaller than the physical file) still report the actual disk space
         // reclaimed. Fall back to `removed.file_size` if stat fails.
-        let physical_size = compio::fs::metadata(&log_path).await.map(|m| m.len()).unwrap_or(removed.file_size);
+        let fallback_size = removed.file_size;
+        let physical_size = compio::fs::metadata(&log_path).await.map(|m| m.len()).unwrap_or(fallback_size);
         self.metrics.segments_evicted.inc();
         self.metrics.evicted_bytes.inc_by(physical_size);
+        // Explicitly drop the segment (and its idx mmap) before unlinking
+        // the underlying files. Linux is fine with unlinking a mapped file,
+        // but releasing the mapping first keeps the eviction safe on
+        // platforms where unlink fails while a mapping is alive.
+        drop(removed);
         let _ = compio::fs::remove_file(log_path).await;
         let _ = compio::fs::remove_file(idx_path).await;
       } else {
