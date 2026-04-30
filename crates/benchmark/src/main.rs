@@ -50,6 +50,10 @@ struct Cli {
   /// Size of message payload in bytes
   #[arg(long, default_value = "16384")]
   payload_size: usize,
+
+  /// Enable message persistence on the benchmark channels
+  #[arg(long, default_value_t = false)]
+  persist: bool,
 }
 
 /// Parse duration from string (supports: 30s, 5m, 1h)
@@ -80,6 +84,7 @@ fn main() {
   info!("consumer(s): {}", cli.consumers);
   info!("channel(s): {}", cli.channels);
   info!("duration: {:?}", cli.duration);
+  info!("persist: {}", cli.persist);
 
   // Initialize compio runtime
   compio::runtime::RuntimeBuilder::new().build().unwrap().block_on(async {
@@ -226,6 +231,7 @@ async fn create_and_join_channel(
   num_producers: usize,
   num_consumers: usize,
   channel_index: usize,
+  persist: bool,
 ) -> Result<StringAtom> {
   // Generate a unique channel name using the provided index
   let channel_id = format!("!bench{}@localhost", channel_index);
@@ -241,6 +247,19 @@ async fn create_and_join_channel(
       anyhow::bail!("failed to create channel: {}", e);
     },
   };
+
+  // Optionally enable message persistence on the channel
+  if persist {
+    match clients[0].configure_channel(channel.clone(), None, None, None, Some(true), None).await {
+      Ok(()) => {
+        info!("channel persistence enabled: {}", channel);
+      },
+      Err(e) => {
+        error!("failed to enable persistence on channel: {}", e);
+        anyhow::bail!("failed to enable persistence on channel: {}", e);
+      },
+    };
+  }
 
   // Set channel ACL for publish
   let mut allow_publish: Vec<Nid> = Vec::with_capacity(num_producers);
@@ -524,7 +543,7 @@ async fn perform_benchmark(cli: &Cli, metrics: &mut BenchmarkMetrics) -> Result<
     if cli.channels > 1 {
       info!("creating channel {} of {}...", i + 1, cli.channels);
     }
-    let channel = create_and_join_channel(&all_clients, cli.producers, cli.consumers, i + 1).await?;
+    let channel = create_and_join_channel(&all_clients, cli.producers, cli.consumers, i + 1, cli.persist).await?;
     channels.push(channel);
   }
 
