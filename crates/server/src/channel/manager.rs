@@ -315,6 +315,13 @@ enum Command {
     correlation_id: u32,
     reply_tx: Sender<anyhow::Result<()>>,
   },
+  /// Periodic-flush request sent by a channel's flush task back into its own actor mailbox,
+  /// so flushes serialize against the same actor that owns appends. Avoids racing on
+  /// `FileMessageLog::inner` (which uses `RefCell` under the single-threaded actor invariant).
+  FlushChannel {
+    handler: StringAtom,
+    reply_tx: Sender<anyhow::Result<()>>,
+  },
 }
 
 /// A channel.
@@ -448,15 +455,13 @@ impl<ML: MessageLog> Channel<ML> {
     seq
   }
 
-  fn ensure_flush_task(&mut self, interval_ms: u32, metrics: &ChannelManagerMetrics) {
+  fn ensure_flush_task(&mut self, interval_ms: u32, mailbox_tx: Sender<Command>) {
     if self.flush_cancel_tx.is_some() {
       return;
     }
     let (cancel_tx, cancel_rx) = async_channel::bounded::<()>(1);
-    let message_log = self.message_log.clone();
     let handler = self.handler.clone();
     let interval = std::time::Duration::from_millis(interval_ms as u64);
-    let metrics = metrics.clone();
 
     compio::runtime::spawn(async move {
       use futures::FutureExt;
@@ -466,12 +471,15 @@ impl<ML: MessageLog> Channel<ML> {
           _ = compio::runtime::time::sleep(interval).fuse() => {},
           _ = cancel_rx.recv().fuse() => break,
         }
-        let start = Instant::now();
-        let result = message_log.flush().await;
-        metrics.record_flush(start, &result);
-        if let Err(e) = result {
-          warn!(channel = %handler, error = %e, "periodic message log flush failed");
+        let (reply_tx, reply_rx) = async_channel::bounded::<anyhow::Result<()>>(1);
+        if mailbox_tx.send(Command::FlushChannel { handler: handler.clone(), reply_tx }).await.is_err() {
+          // Actor mailbox closed (shard shutdown); nothing more to do.
+          break;
         }
+        // Await the reply for natural backpressure: if the actor is slow draining its mailbox,
+        // we shouldn't pile up more flush commands behind broadcasts. Outcome is already logged
+        // and metricized in `flush_channel`; the receive error case is ignored on purpose.
+        let _ = reply_rx.recv().await;
       }
     })
     .detach();
@@ -504,6 +512,9 @@ struct ChannelShard<CS: ChannelStore, MLF: MessageLogFactory> {
   message_log_factory: MLF,
   membership: Membership,
   mailbox: Receiver<Command>,
+  /// Send-side handle to this shard's own mailbox, used to dispatch periodic-flush commands
+  /// from per-channel flush tasks back into the actor.
+  mailbox_tx: Sender<Command>,
   router: GlobalRouter,
   notifier: Notifier,
   local_domain: StringAtom,
@@ -635,7 +646,29 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         let result = self.channel_seq(channel_id, nid, transmitter, correlation_id);
         let _ = reply_tx.send(result).await;
       },
+      Command::FlushChannel { handler, reply_tx } => {
+        let result = self.flush_channel(handler).await;
+        let _ = reply_tx.send(result).await;
+      },
     }
+  }
+
+  /// Flushes the message log of the given channel from within the actor's command loop, so
+  /// the operation serializes against any in-flight append on the same shard. Called via
+  /// `Command::FlushChannel` posted by the per-channel periodic flush task.
+  async fn flush_channel(&mut self, handler: StringAtom) -> anyhow::Result<()> {
+    let Some(channel) = self.channels.get(&handler) else {
+      // Treat this stale flush tick as a no-op. The periodic flush task is stopped separately
+      // via cancellation/config-change handling or when the shard mailbox closes.
+      return Ok(());
+    };
+    let start = Instant::now();
+    let result = channel.message_log.flush().await;
+    self.metrics.record_flush(start, &result);
+    if let Err(ref e) = result {
+      warn!(channel = %handler, error = %e, "periodic message log flush failed");
+    }
+    result
   }
 
   async fn join_channel(
@@ -1032,7 +1065,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         self.metrics.record_flush(start, &result);
         result?;
       } else {
-        channel.ensure_flush_task(flush_interval, &self.metrics);
+        channel.ensure_flush_task(flush_interval, self.mailbox_tx.clone());
       }
     }
 
@@ -1313,7 +1346,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
         if let Some(interval) = channel.config.message_flush_interval
           && interval > 0
         {
-          channel.ensure_flush_task(interval, &self.metrics);
+          channel.ensure_flush_task(interval, self.mailbox_tx.clone());
         }
       }
     }
@@ -1737,6 +1770,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
 
     for (shard_id, hashes_for_shard) in shard_hashes.into_iter().enumerate() {
       let (tx, rx) = async_channel::bounded(self.mailbox_capacity);
+      let mailbox_tx = tx.clone();
       mailboxes.push(tx);
 
       let store = self.store.clone();
@@ -1762,6 +1796,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelManager<CS, MLF> {
             message_log_factory,
             membership,
             mailbox: rx,
+            mailbox_tx,
             router,
             notifier,
             local_domain,

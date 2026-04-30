@@ -206,7 +206,7 @@ pub fn setup_panic_hook() {
     eprintln!("                😱 Oops! something went wrong                ");
     eprintln!("===========================================================\n");
     eprintln!("Narwhal server has panicked. This is a bug. Please report this");
-    eprintln!("at https://github.com/narwhal-io/narwhal/issues/new.");
+    eprintln!("at https://github.com/lonewolf-io/narwhal/issues/new.");
     eprintln!("If you can reliably reproduce this panic, include the");
     eprintln!("reproduction steps and re-run with the RUST_BACKTRACE=1 env");
     eprintln!("var set and include the backtrace in your report.");

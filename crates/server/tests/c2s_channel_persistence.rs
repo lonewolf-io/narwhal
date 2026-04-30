@@ -1305,3 +1305,54 @@ async fn test_c2s_chan_seq_survives_restart() -> anyhow::Result<()> {
 
   Ok(())
 }
+
+/// Regression test for a `RefCell already borrowed` panic in `FileMessageLog` that fired when
+/// a channel's periodic flush task ran concurrently with the actor's broadcast handler. The fix
+/// routes flushes through the actor's mailbox so a sibling task never touches the log while a
+/// borrow is live across an `.await` on the inline append path.
+#[compio::test]
+async fn test_c2s_periodic_flush_task_does_not_race_with_appends() -> anyhow::Result<()> {
+  let tmp = tempfile::tempdir()?;
+  let data_dir = tmp.path().to_path_buf();
+
+  let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
+  let store = FileChannelStore::new(data_dir.clone()).await?;
+  let mlf = FileMessageLogFactory::new(data_dir.clone(), 4096, MessageLogMetrics::noop());
+
+  let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
+  suite.setup().await?;
+
+  suite.auth(TEST_USER_1, TEST_USER_1).await?;
+  suite.join_channel(TEST_USER_1, CHANNEL, None).await?;
+
+  // Persistent channel with a tight 10 ms periodic flush window. With many back-to-back
+  // broadcasts, the flush task is virtually guaranteed to fire while an append is in flight
+  // on the actor: pre-fix this panicked on `RefCell already borrowed`.
+  suite.configure_channel_full(TEST_USER_1, CHANNEL, None, Some(4096), Some(500), Some(true), Some(10)).await?;
+
+  for i in 1..=200 {
+    suite.broadcast(TEST_USER_1, CHANNEL, &format!("p_{i}")).await?;
+  }
+
+  // Sanity-check that the server actually persisted all 200 messages: the periodic flush
+  // did not silently drop work in addition to not panicking.
+  suite
+    .write_message(TEST_USER_1, Message::ChannelSeq(ChannelSeqParameters { id: 1, channel: StringAtom::from(CHANNEL) }))
+    .await?;
+
+  let reply = suite.read_message(TEST_USER_1).await?;
+  match reply {
+    Message::ChannelSeqAck(params) => {
+      assert_eq!(params.id, 1);
+      assert_eq!(params.first_seq, 1);
+      assert_eq!(params.last_seq, 200);
+    },
+    other => panic!("expected ChannelSeqAck, got: {:?}", other),
+  }
+
+  suite.teardown().await?;
+  s2m_ln.shutdown().await?;
+  s2m_dispatcher.shutdown().await?;
+
+  Ok(())
+}
