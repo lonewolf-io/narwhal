@@ -1,9 +1,5 @@
 # This configuration file is designed for benchmarking Narwhal's C2S performance.
 
-# Enable console logging for telemetry
-# [telemetry.console]
-# enabled = true
-
 [c2s-server.limits]
 # Maximum message size in bytes (32KB).
 max_message_size = 32768
