@@ -374,7 +374,7 @@ Acknowledges a connection request and provides server capabilities.
 
 **Example**:
 ```
-CONNECT_ACK auth_required=true heartbeat_interval=30000 max_subscriptions=100 max_message_size=4096 max_payload_size=1048576 max_inflight_requests=10 max_persist_messages=100
+CONNECT_ACK auth_required=true heartbeat_interval=30000 max_subscriptions=100 max_message_size=4096 max_payload_size=1048576 max_inflight_requests=10 max_persist_messages=1000
 ```
 
 ---

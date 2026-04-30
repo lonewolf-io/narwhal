@@ -333,7 +333,7 @@ async fn test_c2s_set_config_fails_when_store_save_fails() -> anyhow::Result<()>
       channel: StringAtom::from(CHANNEL),
       max_clients: 5,
       max_payload_size: 1024,
-      max_persist_messages: 0,
+      max_persist_messages: default_c2s_config().limits.max_persist_messages,
       persist: true,
       message_flush_interval: 0,
     }

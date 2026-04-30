@@ -7,11 +7,12 @@ use narwhal_modulator::create_s2m_listener;
 use narwhal_modulator::modulator::{AuthResult, ForwardBroadcastPayloadResult};
 use narwhal_protocol::{
   ChannelSeqParameters, ErrorParameters, ErrorReason, HistoryParameters, ListChannelsParameters, Message,
+  SetChannelConfigurationParameters,
 };
 use narwhal_server::channel::NoopMessageLogFactory;
 use narwhal_server::channel::file_message_log::{FileMessageLogFactory, MessageLogMetrics};
 use narwhal_server::channel::file_store::FileChannelStore;
-use narwhal_test_util::{C2sSuite, TestModulator, default_c2s_config, default_s2m_config};
+use narwhal_test_util::{C2sSuite, TestModulator, assert_message, default_c2s_config, default_s2m_config};
 use narwhal_util::string_atom::StringAtom;
 use prometheus_client::registry::Registry;
 
@@ -112,6 +113,52 @@ async fn test_c2s_file_channel_store_persists_and_restores_channel() -> anyhow::
     s2m_ln.shutdown().await?;
     s2m_dispatcher.shutdown().await?;
   }
+
+  Ok(())
+}
+
+/// Verifies that enabling persist=true with max_persist_messages=0
+/// is rejected with BadRequest, since unbounded retention is not
+/// a valid client-facing configuration.
+#[compio::test]
+async fn test_c2s_set_persist_with_zero_max_persist_messages_rejected() -> anyhow::Result<()> {
+  let (s2m_client, mut s2m_ln, mut s2m_dispatcher) = bootstrap_s2m(make_auth_modulator()).await?;
+  let tmp = tempfile::tempdir()?;
+  let store = FileChannelStore::new(tmp.path().to_path_buf()).await?;
+  let mlf = NoopMessageLogFactory;
+
+  let mut suite = C2sSuite::with_modulator_and_stores(default_c2s_config(), Some(s2m_client), None, store, mlf).await?;
+  suite.setup().await?;
+
+  suite.auth(TEST_USER_1, TEST_USER_1).await?;
+  suite.join_channel(TEST_USER_1, CHANNEL, None).await?;
+
+  suite
+    .write_message(
+      TEST_USER_1,
+      Message::SetChannelConfiguration(SetChannelConfigurationParameters {
+        id: 7777,
+        channel: StringAtom::from(CHANNEL),
+        persist: Some(true),
+        max_persist_messages: Some(0),
+        ..Default::default()
+      }),
+    )
+    .await?;
+
+  assert_message!(
+    suite.read_message(TEST_USER_1).await?,
+    Message::Error,
+    ErrorParameters {
+      id: Some(7777),
+      reason: ErrorReason::BadRequest.into(),
+      detail: Some(StringAtom::from("max_persist_messages must be greater than 0 for persistent channels")),
+    }
+  );
+
+  suite.teardown().await?;
+  s2m_ln.shutdown().await?;
+  s2m_dispatcher.shutdown().await?;
 
   Ok(())
 }

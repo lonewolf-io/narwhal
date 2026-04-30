@@ -249,7 +249,7 @@ fn default_payload_pool_memory_budget() -> u64 {
 }
 
 fn default_max_persist_messages() -> u32 {
-  100
+  1000
 }
 
 fn default_max_message_flush_interval() -> u32 {

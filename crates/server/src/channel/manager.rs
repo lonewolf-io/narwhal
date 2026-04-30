@@ -668,7 +668,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       let config = ChannelConfig {
         max_clients: Some(self.limits.max_clients_per_channel),
         max_payload_size: Some(self.limits.max_payload_size),
-        max_persist_messages: Some(0),
+        max_persist_messages: Some(self.limits.max_persist_messages),
         persist: Some(false),
         message_flush_interval: Some(0),
       };
@@ -987,7 +987,13 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
 
     let max_payload_size = channel.config.max_payload_size.unwrap_or(0);
     let is_persistent = channel.config.persist == Some(true);
-    let max_persist_messages = channel.config.max_persist_messages.unwrap_or(0);
+    // Defensive backstop: a persistent channel restored from a pre-validation
+    // store could carry max_persist_messages=0; coerce to the server limit so
+    // the eviction loophole stays closed for legacy on-disk state.
+    let max_persist_messages = match channel.config.max_persist_messages.unwrap_or(0) {
+      0 => self.limits.max_persist_messages,
+      v => v,
+    };
     let allowed_targets = channel.allowed_targets.clone();
     let seq = channel.next_seq();
     let payload_length = payload.as_slice().len() as u32;
@@ -1260,6 +1266,15 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> ChannelShard<CS, MLF> {
       config.message_flush_interval.is_some() && config.message_flush_interval != channel.config.message_flush_interval;
     let new_config = channel.config.merge(&config);
     let is_persistent = new_config.persist == Some(true);
+
+    if is_persistent && new_config.max_persist_messages.unwrap_or(0) == 0 {
+      return Err(
+        narwhal_protocol::Error::new(BadRequest)
+          .with_id(correlation_id)
+          .with_detail("max_persist_messages must be greater than 0 for persistent channels")
+          .into(),
+      );
+    }
 
     if is_persistent {
       let mut projected = channel.to_persisted();

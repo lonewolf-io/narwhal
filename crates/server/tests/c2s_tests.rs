@@ -1219,7 +1219,10 @@ async fn test_c2s_channel_max_payload_configuration_limit() -> anyhow::Result<()
 
 #[compio::test]
 async fn test_c2s_channel_max_persist_messages_configuration_limit() -> anyhow::Result<()> {
-  let mut suite = C2sSuite::new(default_c2s_config()).await?;
+  let mut config = default_c2s_config();
+  config.limits.max_persist_messages = 100;
+
+  let mut suite = C2sSuite::new(config).await?;
   suite.setup().await?;
 
   // Identify users.
@@ -1228,7 +1231,7 @@ async fn test_c2s_channel_max_persist_messages_configuration_limit() -> anyhow::
   // Create a channel.
   suite.join_channel(TEST_USER_1, "!test1@localhost", None).await?;
 
-  // Set max_persist_messages above the server limit (default: 100).
+  // Set max_persist_messages above the configured server limit.
   suite
     .write_message(
       TEST_USER_1,
