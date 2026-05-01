@@ -218,7 +218,7 @@ To trade strict per-message durability for higher throughput, add `--flush-inter
 
 ## Project Status
 
-**Current Version: 0.6.0 (Alpha)**
+**Current Version: 0.6.1 (Alpha)**
 
 Narwhal is in active development and currently in **alpha** stage. While the core functionality is working and tested, please note:
 

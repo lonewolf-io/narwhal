@@ -4,6 +4,8 @@ All notable changes to Narwhal will be documented in this file.
 
 ## Unreleased
 
+## 0.6.1 (2026-05-01)
+
 * [CHANGE]: Replace the multi-value `operations` string list on `S2M_CONNECT_ACK` with a single `operation_mask` u64 bitmask. Bit positions are now the authoritative wire contract, frozen in `PROTOCOL.md`'s new `Operation Bit Assignments` section. Breaking wire change with no compatibility shim. [#283](https://github.com/lonewolf-io/narwhal/pull/283)
 * [ENHANCEMENT]: Surface sealed message-log segments whose recovery validation scan terminates before EOF (CRC mismatch, unreadable header, oversized declared lengths, truncated tail, or I/O error) via a new `message_log_sealed_segment_truncations` counter and a `tracing::warn!`, so silent data loss past the validated region shows up as telemetry instead of being discovered later via missing history. [#269](https://github.com/lonewolf-io/narwhal/pull/269)
 * [BUGFIX]: Stop unconditionally forwarding broadcast payloads to the attached modulator. The C2S dispatcher now caches the modulator's declared `Operations` once at startup and gates the forward call on `Operation::ForwardBroadcastPayload`. [#275](https://github.com/lonewolf-io/narwhal/pull/275)

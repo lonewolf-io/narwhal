@@ -176,7 +176,7 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
 name = "broadcast-payload-csv-validator"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "broadcast-payload-json-validator"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1031,7 +1031,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-client"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1057,7 +1057,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-common"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1077,7 +1077,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-modulator"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-broadcast",
@@ -1100,7 +1100,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-protocol"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "futures",
@@ -1112,7 +1112,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-protocol-macros"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1121,7 +1121,7 @@ dependencies = [
 
 [[package]]
 name = "narwhal-util"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -1304,7 +1304,7 @@ checksum = "7edddbd0b52d732b21ad9a5fab5c704c14cd949e5e9a1ec5929a24fded1b904c"
 
 [[package]]
 name = "plain-authenticator"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1355,7 +1355,7 @@ dependencies = [
 
 [[package]]
 name = "private-payload-sender"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "anyhow",
  "async-broadcast",

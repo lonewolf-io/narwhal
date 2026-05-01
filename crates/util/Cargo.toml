@@ -1,6 +1,6 @@
 [package]
 name = "narwhal-util"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2024"
 license = "BSD-3-Clause"
 
