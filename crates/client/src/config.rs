@@ -264,7 +264,7 @@ pub struct S2mSessionExtraInfo {
   pub protocol_name: StringAtom,
 
   /// Bitmask of operations supported by the modulator server.
-  /// See `docs/PROTOCOL.md` "Operation Bit Assignments" for bit semantics.
+  /// See `docs/protocol.md` "Operation Bit Assignments" for bit semantics.
   pub operation_mask: u64,
 }
 

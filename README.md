@@ -46,7 +46,7 @@ https://github.com/user-attachments/assets/bda491a0-a51b-4aaf-9ec8-3b3e7948d5ce
 - **Modular Architecture**: Extend the server with custom application logic via an external modulator
 - **Secure by Default**: TLS/SSL support with automatic certificate generation for development
 - **Channel Management**: Fine-grained access control and configuration per channel
-- **High Performance**: Asynchronous Rust implementation leveraging [io_uring](https://en.wikipedia.org/wiki/Io_uring) for high-throughput ([see benchmark results](docs/BENCHMARK.md))
+- **High Performance**: Asynchronous Rust implementation leveraging [io_uring](https://en.wikipedia.org/wiki/Io_uring) for high-throughput ([see benchmark results](docs/benchmark.md))
 
 ## 🚀 Quick Start
 
@@ -105,8 +105,8 @@ Narwhal uses TOML format for configuration. See the [`examples/config/`](example
 
 ## Documentation
 
-- **[Protocol Specification](docs/PROTOCOL.md)**: Complete protocol documentation including message formats, flow examples, and wire format details
-- **[Benchmark Results](docs/BENCHMARK.md)**: Performance benchmarks and throughput analysis across different payload sizes
+- **[Protocol Specification](docs/protocol.md)**: Complete protocol documentation including message formats, flow examples, and wire format details
+- **[Benchmark Results](docs/benchmark.md)**: Performance benchmarks and throughput analysis across different payload sizes
 - **[Code of Conduct](CODE_OF_CONDUCT.md)**: Community guidelines
 - **[Contributing Guide](CONTRIBUTING.md)**: How to contribute to the project
 

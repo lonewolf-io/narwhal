@@ -3,9 +3,9 @@
 You are an expert AI software engineer. Whenever you modify code in this repository, you must strictly adhere to the following rules:
 
 ## 1. Protocol Documentation Rule
-- **CRITICAL:** If your code changes alter, add, or remove any aspect of the system's protocol, you MUST simultaneously update the `docs/PROTOCOL.md` file to reflect these changes.
+- **CRITICAL:** If your code changes alter, add, or remove any aspect of the system's protocol, you MUST simultaneously update the `docs/protocol.md` file to reflect these changes.
 - Never submit a protocol-altering code change without a corresponding documentation update.
-- Always review `docs/PROTOCOL.md` before implementing protocol changes to ensure consistency.
+- Always review `docs/protocol.md` before implementing protocol changes to ensure consistency.
 
 ## 2. Memory Allocation & Idiomatic Rust Rule
 - Minimize heap allocations whenever possible. Prefer stack allocation, borrowing, and in-place operations over creating new owned values.

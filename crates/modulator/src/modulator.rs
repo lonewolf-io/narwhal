@@ -16,7 +16,7 @@ use narwhal_util::string_atom::StringAtom;
 /// allow for efficient bitwise operations when used with [`Operations`].
 ///
 /// Bit positions are wire contract: see the "Operation Bit Assignments"
-/// table in `docs/PROTOCOL.md`. Existing values must not be reassigned.
+/// table in `docs/protocol.md`. Existing values must not be reassigned.
 #[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operation {

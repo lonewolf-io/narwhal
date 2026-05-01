@@ -36,7 +36,7 @@
 The channel store is the persistence layer for **channel metadata**: the
 handler, owner, configuration, ACLs, and sorted member list of each persistent
 channel. It is separate from, but colocated with, the
-[message log](MESSAGE_LOG.md) that persists broadcast messages.
+[message log](message-log.md) that persists broadcast messages.
 
 Each persistent channel lives in its own directory, identified by a SHA-256
 hash of the channel handler. The directory holds a single `metadata.bin` file
@@ -109,7 +109,7 @@ All persistent channel state is rooted at the configured `data_dir`
 ```
 
 Each channel directory is entirely self-contained: `FileChannelStore` owns
-`metadata.bin`, and [`FileMessageLog`](MESSAGE_LOG.md) owns the `*.log` /
+`metadata.bin`, and [`FileMessageLog`](message-log.md) owns the `*.log` /
 `*.idx` files. They never touch each other's files.
 
 ### Storage Hash
@@ -414,7 +414,7 @@ For each hash:
 The channel store and the message log are independent persistence layers that
 share a directory by convention:
 
-| Aspect | `FileChannelStore` | [`FileMessageLog`](MESSAGE_LOG.md) |
+| Aspect | `FileChannelStore` | [`FileMessageLog`](message-log.md) |
 |--------|--------------------|------------------------------------|
 | Owns | `metadata.bin`, `metadata.bin.tmp` | `*.log`, `*.idx` |
 | Write pattern | Whole-file atomic rewrite | Append-only positioned writes |
