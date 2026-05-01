@@ -526,8 +526,8 @@ pub struct S2mConnectAckParameters {
   #[param(validate = "non_empty")]
   pub application_protocol: StringAtom,
 
-  #[param(validate = "non_empty")]
-  pub operations: Vec<StringAtom>,
+  #[param(validate = "non_zero")]
+  pub operation_mask: u64,
 
   #[param(validate = "non_zero")]
   pub heartbeat_interval: u32,

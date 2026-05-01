@@ -133,7 +133,7 @@ async fn run_server(
     channel_reg,
   );
   let auth_enabled = match &modulator_service.modulator {
-    Some(m) => m.operations().await?.contains(narwhal_modulator::modulator::Operation::Auth),
+    Some(m) => m.operations().await?.contains(narwhal_modulator::modulator::Operation::Authenticate),
     None => false,
   };
   channel_mng.bootstrap(&core_dispatcher, auth_enabled).await?;

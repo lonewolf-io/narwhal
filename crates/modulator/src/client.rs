@@ -33,7 +33,7 @@ impl crate::Modulator for S2mClient {
   /// An [`Operations`] value containing the supported operations.
   async fn operations(&self) -> anyhow::Result<Operations> {
     let (_, extra_session_info) = self.session_info().await?;
-    Ok(extra_session_info.operations.into())
+    Ok(Operations::from(extra_session_info.operation_mask))
   }
 
   /// Authenticates with the modulator server using the provided token.
@@ -53,7 +53,7 @@ impl crate::Modulator for S2mClient {
   /// - `AuthResult::Continue { challenge }` - Server requires additional authentication steps
   /// - `AuthResult::Failure` - Authentication failed
   async fn authenticate(&self, request: AuthRequest) -> anyhow::Result<AuthResponse> {
-    if !self.operations().await?.contains(Operation::Auth) {
+    if !self.operations().await?.contains(Operation::Authenticate) {
       return Err(anyhow::anyhow!("authentication operation not supported"));
     }
 

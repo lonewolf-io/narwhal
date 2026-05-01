@@ -47,7 +47,7 @@ impl Handshaker<Stream> for S2mHandshaker {
         };
 
         let session_extra_info =
-          S2mSessionExtraInfo { protocol_name: params.application_protocol, operations: params.operations };
+          S2mSessionExtraInfo { protocol_name: params.application_protocol, operation_mask: params.operation_mask };
 
         Ok((session_info, session_extra_info))
       },

@@ -399,8 +399,13 @@ mod tests {
         },
     TestCase {
             name: "S2M_CONNECT_ACK",
-            input: b"S2M_CONNECT_ACK application_protocol=my-proto/1.0 operations:1=auth heartbeat_interval=20000 max_inflight_requests=100 max_message_size=8192 max_payload_size=262144",
-            expected: Ok(Message::S2mConnectAck(S2mConnectAckParameters { application_protocol: "my-proto/1.0".into(), operations: Vec::from([StringAtom::from("auth")].as_slice()), heartbeat_interval: 20000, max_inflight_requests: 100, max_message_size: 8192, max_payload_size: 262144 }),),
+            input: b"S2M_CONNECT_ACK application_protocol=my-proto/1.0 operation_mask=1 heartbeat_interval=20000 max_inflight_requests=100 max_message_size=8192 max_payload_size=262144",
+            expected: Ok(Message::S2mConnectAck(S2mConnectAckParameters { application_protocol: "my-proto/1.0".into(), operation_mask: 1, heartbeat_interval: 20000, max_inflight_requests: 100, max_message_size: 8192, max_payload_size: 262144 }),),
+        },
+    TestCase {
+            name: "S2M_CONNECT_ACK (all bits)",
+            input: b"S2M_CONNECT_ACK application_protocol=my-proto/1.0 operation_mask=31 heartbeat_interval=20000 max_inflight_requests=100 max_message_size=8192 max_payload_size=262144",
+            expected: Ok(Message::S2mConnectAck(S2mConnectAckParameters { application_protocol: "my-proto/1.0".into(), operation_mask: 0x1F, heartbeat_interval: 20000, max_inflight_requests: 100, max_message_size: 8192, max_payload_size: 262144 }),),
         },
     TestCase { name: "S2M_FORWARD_EVENT", input: b"S2M_FORWARD_EVENT id=1 kind=MEMBER_JOINED channel=!1@localhost nid=test@localhost owner=true", expected: Ok(Message::S2mForwardEvent(S2mForwardEventParameters { id: 1, kind: StringAtom::from("MEMBER_JOINED"), channel: Some(StringAtom::from("!1@localhost")), nid: Some(StringAtom::from("test@localhost")), owner: Some(true) })) },
     TestCase { name: "S2M_FORWARD_EVENT_ACK", input: b"S2M_FORWARD_EVENT_ACK id=1", expected: Ok(Message::S2mForwardEventAck(S2mForwardEventAckParameters { id: 1 })) },

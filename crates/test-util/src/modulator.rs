@@ -143,7 +143,7 @@ impl Modulator for TestModulator {
   async fn operations(&self) -> anyhow::Result<Operations> {
     let mut ops = Operations::new();
     if self.auth_handler.is_some() {
-      ops = ops.with(Operation::Auth);
+      ops = ops.with(Operation::Authenticate);
     }
     if self.forward_message_payload_handler.is_some() {
       ops = ops.with(Operation::ForwardBroadcastPayload);

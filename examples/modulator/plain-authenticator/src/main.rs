@@ -53,9 +53,9 @@ impl narwhal_modulator::Modulator for PlainAuthenticator {
     Ok(MODULATOR_PROTOCOL_NAME.into())
   }
 
-  /// Declares that this modulator supports only the Auth operation.
+  /// Declares that this modulator supports only the Authenticate operation.
   async fn operations(&self) -> anyhow::Result<Operations> {
-    Ok(Operations::new().with(Operation::Auth))
+    Ok(Operations::new().with(Operation::Authenticate))
   }
 
   /// Authenticates a client using the PLAIN mechanism.

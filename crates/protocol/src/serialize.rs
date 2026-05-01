@@ -426,8 +426,13 @@ mod tests {
             },
             TestCase {
                 name: "S2M_CONNECT_ACK",
-                msg: Message::S2mConnectAck(S2mConnectAckParameters { application_protocol: "my-proto/1.0".into(), operations: Vec::from(["auth".into()].as_slice()), heartbeat_interval: 20000, max_inflight_requests: 100, max_message_size: 8192, max_payload_size: 262144 }),
-                expected_out: Some("S2M_CONNECT_ACK application_protocol=my-proto/1.0 heartbeat_interval=20000 max_inflight_requests=100 max_message_size=8192 max_payload_size=262144 operations:1=auth\n".to_string()),
+                msg: Message::S2mConnectAck(S2mConnectAckParameters { application_protocol: "my-proto/1.0".into(), operation_mask: 1, heartbeat_interval: 20000, max_inflight_requests: 100, max_message_size: 8192, max_payload_size: 262144 }),
+                expected_out: Some("S2M_CONNECT_ACK application_protocol=my-proto/1.0 heartbeat_interval=20000 max_inflight_requests=100 max_message_size=8192 max_payload_size=262144 operation_mask=1\n".to_string()),
+            },
+            TestCase {
+                name: "S2M_CONNECT_ACK (all bits)",
+                msg: Message::S2mConnectAck(S2mConnectAckParameters { application_protocol: "my-proto/1.0".into(), operation_mask: 0x1F, heartbeat_interval: 20000, max_inflight_requests: 100, max_message_size: 8192, max_payload_size: 262144 }),
+                expected_out: Some("S2M_CONNECT_ACK application_protocol=my-proto/1.0 heartbeat_interval=20000 max_inflight_requests=100 max_message_size=8192 max_payload_size=262144 operation_mask=31\n".to_string()),
             },
             TestCase {
                 name: "S2M_FORWARD_EVENT",

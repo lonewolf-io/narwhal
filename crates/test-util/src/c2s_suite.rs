@@ -129,7 +129,7 @@ impl<CS: ChannelStore, MLF: MessageLogFactory> C2sSuite<CS, MLF> {
     let mut registry = Registry::default();
 
     let auth_enabled = match &modulator {
-      Some(m) => m.operations().await?.contains(narwhal_modulator::modulator::Operation::Auth),
+      Some(m) => m.operations().await?.contains(narwhal_modulator::modulator::Operation::Authenticate),
       None => false,
     };
 

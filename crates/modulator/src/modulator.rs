@@ -12,52 +12,43 @@ use narwhal_util::string_atom::StringAtom;
 /// Represents individual operations that a modulator can perform.
 ///
 /// Each variant corresponds to a specific capability that can be supported
-/// by a [`Modulator`]. The enum is represented as a `u32` internally to
+/// by a [`Modulator`]. The enum is represented as a `u64` internally to
 /// allow for efficient bitwise operations when used with [`Operations`].
-#[repr(u32)]
+///
+/// Bit positions are wire contract: see the "Operation Bit Assignments"
+/// table in `docs/PROTOCOL.md`. Existing values must not be reassigned.
+#[repr(u64)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operation {
-  /// Authentication operation.
+  /// Authentication operation (wire name: `authenticate`).
   ///
   /// Enables validation of authentication tokens through the
   /// [`authenticate`](Modulator::authenticate) method.
-  Auth = 1 << 0,
+  Authenticate = 1 << 0,
 
-  /// Message payload forwarding operation.
+  /// Message payload forwarding operation (wire name: `forward-broadcast-payload`).
   ///
   /// Enables validation of broadcast message payloads received from clients through the
   /// [`forward_broadcast_payload`](Modulator::forward_broadcast_payload) method.
   ForwardBroadcastPayload = 1 << 1,
 
-  /// Event forwarding operation.
+  /// Event forwarding operation (wire name: `forward-event`).
   ///
   /// Enables processing of system events and state changes through the
   /// [`forward_event`](Modulator::forward_event) method.
   ForwardEvent = 1 << 2,
 
-  /// Send private payload operation.
+  /// Send private payload operation (wire name: `send-private-payload`).
   ///
   /// Enables direct communication between clients and the modulator through the
   /// [`send_private_payload`](Modulator::send_private_payload) method.
   SendPrivatePayload = 1 << 3,
 
-  /// Receive private payload operation.
+  /// Receive private payload operation (wire name: `receive-private-payload`).
   ///
   /// Enables receiving outbound private payloads from the modulator to clients through the
   /// [`receive_private_payload`](Modulator::receive_private_payload) method.
   ReceivePrivatePayload = 1 << 4,
-}
-
-impl From<Operation> for StringAtom {
-  fn from(val: Operation) -> Self {
-    match val {
-      Operation::Auth => "auth".into(),
-      Operation::ForwardBroadcastPayload => "fwd-broadcast-payload".into(),
-      Operation::ForwardEvent => "fwd-event".into(),
-      Operation::SendPrivatePayload => "send-private-payload".into(),
-      Operation::ReceivePrivatePayload => "recv-private-payload".into(),
-    }
-  }
 }
 
 /// A bitset representing a collection of supported [`Operation`]s.
@@ -65,7 +56,7 @@ impl From<Operation> for StringAtom {
 /// This type provides a memory-efficient way to store and query which operations
 /// a modulator supports.
 #[derive(Debug, Default, Clone, Copy, PartialEq)]
-pub struct Operations(u32);
+pub struct Operations(u64);
 
 impl Operations {
   /// Returns all available operations as a slice.
@@ -73,7 +64,7 @@ impl Operations {
   /// This constant provides access to all possible operations that can be
   /// supported by a modulator.
   pub const ALL: &'static [Operation] = &[
-    Operation::Auth,
+    Operation::Authenticate,
     Operation::ForwardBroadcastPayload,
     Operation::ForwardEvent,
     Operation::SendPrivatePayload,
@@ -102,7 +93,7 @@ impl Operations {
   /// A new [`Operations`] instance with the specified operation included
   #[inline(always)]
   pub const fn with(self, op: Operation) -> Self {
-    Self(self.0 | op as u32)
+    Self(self.0 | op as u64)
   }
 
   /// Removes an operation from the operation set.
@@ -118,7 +109,7 @@ impl Operations {
   /// A new [`Operations`] instance with the specified operation excluded
   #[inline(always)]
   pub const fn remove(self, op: Operation) -> Self {
-    Self(self.0 & !(op as u32))
+    Self(self.0 & !(op as u64))
   }
 
   /// Checks if the operation set contains a specific operation.
@@ -132,36 +123,19 @@ impl Operations {
   /// `true` if the operation is present in the set, `false` otherwise
   #[inline(always)]
   pub const fn contains(self, op: Operation) -> bool {
-    self.0 & op as u32 != 0
+    self.0 & op as u64 != 0
+  }
+
+  /// Returns the raw bitmask backing this operations set.
+  #[inline(always)]
+  pub const fn bits(self) -> u64 {
+    self.0
   }
 }
 
-impl From<Operations> for Vec<StringAtom> {
-  fn from(ops: Operations) -> Self {
-    let mut vec = Vec::with_capacity(Operations::ALL.len());
-    Operations::ALL.iter().for_each(|op| {
-      if ops.contains(*op) {
-        vec.push((*op).into());
-      }
-    });
-    vec
-  }
-}
-
-impl From<Vec<StringAtom>> for Operations {
-  fn from(ops: Vec<StringAtom>) -> Self {
-    let mut operations = Operations::new();
-    for op in ops {
-      match op.as_ref() {
-        "auth" => operations = operations.with(Operation::Auth),
-        "fwd-broadcast-payload" => operations = operations.with(Operation::ForwardBroadcastPayload),
-        "fwd-event" => operations = operations.with(Operation::ForwardEvent),
-        "send-private-payload" => operations = operations.with(Operation::SendPrivatePayload),
-        "recv-private-payload" => operations = operations.with(Operation::ReceivePrivatePayload),
-        _ => continue, // ignore unknown operations
-      }
-    }
-    operations
+impl From<u64> for Operations {
+  fn from(bits: u64) -> Self {
+    Self(bits)
   }
 }
 
@@ -329,7 +303,7 @@ pub trait Modulator: Debug + Send + Sync + 'static {
 
   /// Authenticates a request and returns the result of the authentication.
   ///
-  /// This method is called when the modulator supports the [`Operation::Auth`]
+  /// This method is called when the modulator supports the [`Operation::Authenticate`]
   /// operation. It processes the provided authentication request and returns
   /// an appropriate [`AuthResponse`].
   ///

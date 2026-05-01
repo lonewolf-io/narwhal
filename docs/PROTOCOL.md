@@ -70,6 +70,7 @@
   - [M2S_MOD_DIRECT](#m2s_mod_direct)
   - [M2S_MOD_DIRECT_ACK](#m2s_mod_direct_ack)
 - [Error Reasons](#error-reasons)
+- [Operation Bit Assignments](#operation-bit-assignments)
 - [Event Kinds](#event-kinds)
 
 ## Overview
@@ -245,9 +246,9 @@ The intended upgrade path is:
 **Modulator Operations:**
 
 The modulator declares supported operations in its [S2M_CONNECT_ACK](#s2m_connect_ack) response:
-- `operations`: Array of operation names the modulator supports (e.g., `auth`, `fwd-broadcast-payload`, etc.)
+- `operation_mask`: Bitmask of supported operations. See [Operation Bit Assignments](#operation-bit-assignments) for the per-bit meanings.
 - The server adapts its behavior based on supported operations
-- If `auth` is not supported, clients must use [IDENTIFY](#identify) instead of authenticated [AUTH](#auth)
+- If `authenticate` (bit 0) is not supported, clients must use [IDENTIFY](#identify) instead of authenticated [AUTH](#auth)
 - This allows modulators to implement only the features they need
 
 **Error Handling:**
@@ -318,11 +319,11 @@ MESSAGE_NAME param1=value1 param2=value2 param3:2=value1,value2
 1. Client sends [CONNECT](#connect)
 2. Server responds with [CONNECT_ACK](#connect_ack)
 3. If auth required:
-   - If modulator doesn't support `auth` operation:
+   - If modulator doesn't support `authenticate` operation:
      - Client sends [IDENTIFY](#identify) to register username
      - Server responds with [IDENTIFY_ACK](#identify_ack)
    - Client sends [AUTH](#auth)
-   - Server responds with [AUTH_ACK](#auth_ack) (delegated to modulator if it supports `auth`)
+   - Server responds with [AUTH_ACK](#auth_ack) (delegated to modulator if it supports `authenticate`)
 4. Client can now send operational messages
 
 #### Server-to-Modulator Connection Flow (S2M)
@@ -393,7 +394,7 @@ Registers a username with the server.
 IDENTIFY username=alice
 ```
 
-**Note**: IDENTIFY is required when the configured modulator (if any) doesn't support the `auth` operation type. In such cases, the server cannot delegate authentication to the modulator, so the client must first register a username via IDENTIFY. If a modulator with `auth` support is configured, IDENTIFY can be skipped and authentication will be delegated to the modulator.
+**Note**: IDENTIFY is required when the configured modulator (if any) doesn't support the `authenticate` operation type. In such cases, the server cannot delegate authentication to the modulator, so the client must first register a username via IDENTIFY. If a modulator with `authenticate` support is configured, IDENTIFY can be skipped and authentication will be delegated to the modulator.
 
 ---
 
@@ -415,7 +416,7 @@ IDENTIFY_ACK nid=alice@example.com
 
 ### AUTH
 
-Authenticates the client using a token. Authentication is only supported when a modulator is configured and supports the `auth` operation. In this case, the server delegates token validation to the modulator via [S2M_AUTH](#s2m_auth). If no modulator with `auth` support is configured, clients must use [IDENTIFY](#identify) instead to register a username, and the AUTH message serves no authentication purpose.
+Authenticates the client using a token. Authentication is only supported when a modulator is configured and supports the `authenticate` operation. In this case, the server delegates token validation to the modulator via [S2M_AUTH](#s2m_auth). If no modulator with `authenticate` support is configured, clients must use [IDENTIFY](#identify) instead to register a username, and the AUTH message serves no authentication purpose.
 
 **Direction**: Client → Server
 
@@ -427,13 +428,13 @@ Authenticates the client using a token. Authentication is only supported when a 
 AUTH token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-**Note**: Authentication is only possible when a modulator with `auth` support is configured. In this case, the modulator determines the username. Without a modulator supporting `auth`, the username must be set via [IDENTIFY](#identify) and no real authentication occurs.
+**Note**: Authentication is only possible when a modulator with `authenticate` support is configured. In this case, the modulator determines the username. Without a modulator supporting `authenticate`, the username must be set via [IDENTIFY](#identify) and no real authentication occurs.
 
 ---
 
 ### AUTH_ACK
 
-Acknowledges an authentication attempt. If a modulator with `auth` support is configured, this response is based on the modulator's [S2M_AUTH_ACK](#s2m_auth_ack) response. Without such a modulator, this is simply an acknowledgment without actual authentication.
+Acknowledges an authentication attempt. If a modulator with `authenticate` support is configured, this response is based on the modulator's [S2M_AUTH_ACK](#s2m_auth_ack) response. Without such a modulator, this is simply an acknowledgment without actual authentication.
 
 **Direction**: Server → Client
 
@@ -447,7 +448,7 @@ Acknowledges an authentication attempt. If a modulator with `auth` support is co
 AUTH_ACK succeeded=true nid=alice@example.com
 ```
 
-**Note**: When a modulator with `auth` support is configured, the `nid` is constructed from the `username` provided by the modulator in [S2M_AUTH_ACK](#s2m_auth_ack) combined with the server's domain.
+**Note**: When a modulator with `authenticate` support is configured, the `nid` is constructed from the `username` provided by the modulator in [S2M_AUTH_ACK](#s2m_auth_ack) combined with the server's domain.
 
 ---
 
@@ -1119,7 +1120,7 @@ Acknowledges a server-to-modulator connection and declares the modulator's capab
 
 **Parameters**:
 - `application_protocol` (string, required): Modulator's application protocol (must be non-empty)
-- `operations` (string[], required): Supported operations (must be non-empty)
+- `operation_mask` (u64, required): Bitmask of supported operations (must be non-zero). See [Operation Bit Assignments](#operation-bit-assignments).
 - `heartbeat_interval` (u32, required): Heartbeat interval in milliseconds (must be non-zero)
 - `max_inflight_requests` (u32, required): Maximum concurrent requests (must be non-zero)
 - `max_message_size` (u32, required): Maximum message size in bytes (must be non-zero)
@@ -1127,14 +1128,14 @@ Acknowledges a server-to-modulator connection and declares the modulator's capab
 
 **Example**:
 ```
-Modulator → Server: S2M_CONNECT_ACK application_protocol=myapp-v1 operations:2=auth fwd-broadcast-payload heartbeat_interval=30000 max_inflight_requests=50 max_message_size=8192 max_payload_size=4194304
+Modulator → Server: S2M_CONNECT_ACK application_protocol=myapp-v1 operation_mask=3 heartbeat_interval=30000 max_inflight_requests=50 max_message_size=8192 max_payload_size=4194304
 ```
 
 ---
 
 ### S2M_AUTH
 
-Delegates user authentication to the modulator's application protocol. This message is only sent if the modulator declared support for the `auth` operation in its [S2M_CONNECT_ACK](#s2m_connect_ack) message.
+Delegates user authentication to the modulator's application protocol. This message is only sent if the modulator declared support for the `authenticate` operation in its [S2M_CONNECT_ACK](#s2m_connect_ack) message.
 
 **Direction**: Server → Modulator
 
@@ -1147,7 +1148,7 @@ Delegates user authentication to the modulator's application protocol. This mess
 S2M_AUTH id=1 token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-**Note**: If the modulator doesn't support `auth`, authentication is not available. Clients must use [IDENTIFY](#identify) to register a username, and the AUTH message does not provide real authentication.
+**Note**: If the modulator doesn't support `authenticate`, authentication is not available. Clients must use [IDENTIFY](#identify) to register a username, and the AUTH message does not provide real authentication.
 
 ---
 
@@ -1418,6 +1419,22 @@ The following error reasons can be returned in [ERROR](#error) messages:
 - `UNEXPECTED_MESSAGE`
 - `UNSUPPORTED_PROTOCOL_VERSION`
 
+## Operation Bit Assignments
+
+The `operation_mask` parameter in [S2M_CONNECT_ACK](#s2m_connect_ack) is a `u64` bitmask declaring the operations supported by the modulator. Each bit position corresponds to one operation, as defined in the table below.
+
+These bit assignments are part of the wire contract: existing positions MUST NOT be reassigned. New operations are introduced by allocating the next free bit. A receiver MUST ignore bits it does not recognize so that older peers can interoperate with newer ones that advertise additional capabilities.
+
+| Bit | Mask | Name | Description |
+|-----|------|------|-------------|
+| 0 | 0x01 | `authenticate` | Delegate authentication via [S2M_AUTH](#s2m_auth) / [S2M_AUTH_ACK](#s2m_auth_ack) |
+| 1 | 0x02 | `forward-broadcast-payload` | Validate or transform broadcast payloads via [S2M_FORWARD_BROADCAST_PAYLOAD](#s2m_forward_broadcast_payload) |
+| 2 | 0x04 | `forward-event` | Forward channel events via [S2M_FORWARD_EVENT](#s2m_forward_event) |
+| 3 | 0x08 | `send-private-payload` | Receive client direct messages via [S2M_MOD_DIRECT](#s2m_mod_direct) |
+| 4 | 0x10 | `receive-private-payload` | Push direct messages to clients via [M2S_MOD_DIRECT](#m2s_mod_direct) |
+
+For example, `operation_mask=3` (= `0x01 | 0x02`) declares `authenticate` and `forward-broadcast-payload` support.
+
 ## Event Kinds
 
 The following event kinds can be sent in [EVENT](#event) and [S2M_FORWARD_EVENT](#s2m_forward_event) messages:
@@ -1471,11 +1488,11 @@ The `seq` in `BROADCAST_ACK` matches the `seq` in the `MESSAGE` delivered to rec
 
 ### Example 3a: Authentication with Modulator Support
 
-When a modulator supports the `auth` operation, it handles authentication and provides the username:
+When a modulator supports the `authenticate` operation (bit 0), it handles authentication and provides the username:
 
 ```
 Server → Modulator: S2M_CONNECT version=1 secret=server-secret heartbeat_interval=30000
-Modulator → Server: S2M_CONNECT_ACK application_protocol=myapp-v1 operations:2=auth fwd-broadcast-payload heartbeat_interval=30000 max_inflight_requests=50 max_message_size=8192 max_payload_size=4194304
+Modulator → Server: S2M_CONNECT_ACK application_protocol=myapp-v1 operation_mask=3 heartbeat_interval=30000 max_inflight_requests=50 max_message_size=8192 max_payload_size=4194304
 
 [Client connects and authenticates directly without IDENTIFY]
 Client → Server: CONNECT version=1 heartbeat_interval=30000
@@ -1496,11 +1513,11 @@ Modulator → Server: S2M_MOD_DIRECT_ACK id=2 valid=true
 
 ### Example 3b: Authentication without Modulator Auth Support
 
-When a modulator doesn't support the `auth` operation, clients must use IDENTIFY first:
+When a modulator doesn't support the `authenticate` operation (bit 0), clients must use IDENTIFY first:
 
 ```
 Server → Modulator: S2M_CONNECT version=1 secret=server-secret heartbeat_interval=30000
-Modulator → Server: S2M_CONNECT_ACK application_protocol=myapp-v1 operations:1=fwd-broadcast-payload heartbeat_interval=30000 max_inflight_requests=50 max_message_size=8192 max_payload_size=4194304
+Modulator → Server: S2M_CONNECT_ACK application_protocol=myapp-v1 operation_mask=2 heartbeat_interval=30000 max_inflight_requests=50 max_message_size=8192 max_payload_size=4194304
 
 [Client connects and must identify before authenticating]
 Client → Server: CONNECT version=1 heartbeat_interval=30000
@@ -1574,7 +1591,7 @@ The payload immediately follows the message parameters without any additional fr
 
 ### Authentication
 
-- **Client Authentication**: Only supported when a modulator is configured with `auth` operation support
+- **Client Authentication**: Only supported when a modulator is configured with `authenticate` operation support
   - Clients with modulator auth: Use [AUTH](#auth) message with a token, validated by modulator via [S2M_AUTH](#s2m_auth)
   - Clients without modulator auth: Use [IDENTIFY](#identify) to register a username (no actual authentication occurs)
 - **Modulator Authentication**: Modulators authenticate to the server using a shared secret in [M2S_CONNECT](#m2s_connect) or [S2M_CONNECT](#s2m_connect)

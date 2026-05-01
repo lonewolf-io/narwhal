@@ -263,8 +263,9 @@ pub struct S2mSessionExtraInfo {
   /// The modulator's protocol identifier.
   pub protocol_name: StringAtom,
 
-  /// The operations supported by the modulator server.
-  pub operations: Vec<StringAtom>,
+  /// Bitmask of operations supported by the modulator server.
+  /// See `docs/PROTOCOL.md` "Operation Bit Assignments" for bit semantics.
+  pub operation_mask: u64,
 }
 
 /// M2S client configuration.

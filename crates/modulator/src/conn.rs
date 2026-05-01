@@ -543,7 +543,7 @@ impl<M: Modulator> S2mDispatcher<M> {
         // Send the proper reply message informing the client that it is connected.
         let reply_msg = Message::S2mConnectAck(S2mConnectAckParameters {
           application_protocol: self.modulator.protocol_name().await?,
-          operations: self.modulator.operations().await?.into(),
+          operation_mask: self.modulator.operations().await?.bits(),
           heartbeat_interval: heartbeat_interval.as_millis() as u32,
           max_message_size: config.limits.max_message_size,
           max_payload_size: config.limits.max_payload_size,
@@ -577,8 +577,8 @@ impl<M: Modulator> S2mDispatcher<M> {
   async fn dispatch_auth_message(&mut self, msg: Message) -> anyhow::Result<()> {
     assert!(matches!(msg, Message::S2mAuth { .. }));
 
-    // Check if the modulator supports the Auth operation.
-    if !self.modulator.operations().await?.contains(Operation::Auth) {
+    // Check if the modulator supports the Authenticate operation.
+    if !self.modulator.operations().await?.contains(Operation::Authenticate) {
       return Err(narwhal_protocol::Error::new(UnexpectedMessage).into());
     }
 
