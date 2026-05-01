@@ -448,7 +448,7 @@ they serialize the error into `reply_tx` and keep looping.
 
 `ChannelShard::restore_and_run(hashes)` wraps the standard loop with a
 pre-loop restore phase that re-hydrates persisted channels from disk (see
-[channel-store.md](channel-store.md)) and a post-loop shutdown phase that
+[channel-store.md](../persistence/channel-store.md)) and a post-loop shutdown phase that
 cancels periodic flush tasks and performs a final flush on each persistent
 channel before dropping.
 

@@ -1,7 +1,7 @@
 # FIFO Channels: Architecture Specification
 
 > **Status:** Proposed. Not yet implemented.
-> **Related design:** [Message Log](message-log.md), [Channel Store](channel-store.md)
+> **Related design:** [Message Log](../persistence/message-log.md), [Channel Store](../persistence/channel-store.md)
 
 ## Table of Contents
 
@@ -98,7 +98,7 @@ cursor. There is no fairness scheduler beyond mailbox arrival order
 ### Ordering and Concurrency
 
 `PUSH` and `POP` are both processed on the channel's shard actor (existing
-sharding by channel handler, see [actor-sharding.md](actor-sharding.md)).
+sharding by channel handler, see [actor-sharding.md](../runtime/actor-sharding.md)).
 This serialization gives:
 
 - `PUSH`es from the owner are appended to the log in arrival order.
@@ -442,7 +442,7 @@ Added to `narwhal-protocol`:
 ### Reusing the Message Log
 
 FIFO channels reuse the existing per-channel segmented append-only message log
-(see [message-log.md](message-log.md)) without modification to its on-disk
+(see [message-log.md](../persistence/message-log.md)) without modification to its on-disk
 format. Each `PUSH` is appended exactly like a pub/sub `BROADCAST`:
 
 - 22-byte header + `from` (owner Nid) + payload + CRC32.
@@ -578,7 +578,7 @@ once at type transition).
 1. Append the entry to the message log buffer.
 2. If `message_flush_interval == 0`: synchronously flush+fsync the log
    (per the existing `BROADCAST` semantics; see
-   [`docs/protocol.md`](../protocol.md) and `broadcast_payload` in
+   [`docs/protocol.md`](../../protocol.md) and `broadcast_payload` in
    `crates/server/src/channel/manager.rs`). Otherwise the entry stays in
    the log buffer until the next periodic flush.
 3. Send `PUSH_ACK`.
@@ -631,7 +631,7 @@ clients (or one client across retries) receive the same physical queue
 element.
 
 **Cursor write protocol** (atomic, mirrors the channel-store write; see
-[channel-store.md](channel-store.md)):
+[channel-store.md](../persistence/channel-store.md)):
 
 1. Write to `cursor.bin.tmp`.
 2. `fsync` the tmp file.
